@@ -149,7 +149,7 @@ select {
 }
 .check { display: inline-flex; align-items: center; gap: 7px; cursor: pointer; color: var(--text-secondary); font-size: 13px; padding-bottom: 6px; }
 .check input { accent-color: var(--accent); width: 15px; height: 15px; }
-.seg { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.seg { display: inline-flex; flex-wrap: wrap; max-width: 100%; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
 .seg button { appearance: none; border: 0; background: var(--surface-1); padding: 6px 12px; cursor: pointer; color: var(--text-secondary); font-size: 13px; font-weight: 550; }
 .seg button + button { border-left: 1px solid var(--border); }
 .seg button[aria-pressed="true"] { background: var(--accent-soft); color: var(--text-primary); }
