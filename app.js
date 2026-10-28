@@ -44,6 +44,44 @@
   const ABR_SEASONS = ABR.seasons, EXO_SEASONS = EXO.seasons;
   const abrPref = ABR.configs.find(c => c.preferred) || ABR.configs[0];
   const exoPref = EXO.configs.find(c => c.preferred) || EXO.configs[0];
+  // Generation_data families: exogenous / endogenous, single seasons / joined years (1 + 2 -> 3)
+  const EMPTY_FAM = { configs: [], seasons: [], lstmvis: [], pending: [] };
+  const ENDO = D.endo_gd || EMPTY_FAM, EXOJ = D.exo_joined || EMPTY_FAM, ENDOJ = D.endo_joined || EMPTY_FAM;
+  const GD = { exo: EXO, endo: ENDO, exoJ: EXOJ, endoJ: ENDOJ };
+  const GD_PART = { exo: 'LSTM esogena', endo: 'LSTM endogena (GD)', exoJ: 'LSTM esogena · anni uniti', endoJ: 'LSTM endogena (GD) · anni uniti' };
+  const GD_TAG = { exo: 'ESO', endo: 'END', exoJ: 'ESO anni', endoJ: 'END anni' };
+  function gdFam(base, mode) { return mode === 'joined' ? base + 'J' : base; }
+  // a season entry as seen with the chosen test samples (joined nets: whole year 3, or the same samples as the single-season nets)
+  function gdView(s, samples) {
+    if (!s) return null;
+    if (s.m20 && (samples || S.gdSamples) === 'last20') return { metrics: s.m20, pers: s.p20, shift1: s.s20, n_test: s.n_last20 };
+    return s;
+  }
+  function gdVal(F, c, m, season, ofPers, samples) {
+    if (season !== 'mean') { const s = gdView(c.seasons[season], samples); return s ? exoSeasonVal(s, m, ofPers) : null; }
+    return mean(F.seasons.map(s => gdView(c.seasons[s.key], samples)).filter(Boolean).map(s => exoSeasonVal(s, m, ofPers)));
+  }
+  function gdAll() {
+    return ['exo', 'endo', 'exoJ', 'endoJ'].flatMap(fk => GD[fk].configs.map(cf => Object.assign({}, cf, { id: fk + ':' + cf.id, label: GD_TAG[fk] + ' ' + cf.id })));
+  }
+  // Generation_data test series are stored compactly (first sheet row + predictions): rebuild them on first use
+  const GDP = D.gd_power || {};
+  for (const F of [EXO, ENDO, EXOJ, ENDOJ]) for (const cf of F.configs) for (const [sheet, e] of Object.entries(cf.seasons)) {
+    const c0 = e.series;
+    if (!c0 || !('i0' in c0)) continue;
+    let cache = null;
+    Object.defineProperty(e, 'series', { configurable: true, enumerable: true, get() {
+      if (!cache) {
+        const p = GDP[e.sheet || sheet], n = c0.pred.length, tl = cf.tl;
+        const idx = new Array(n), real = new Array(n), pers = new Array(n), shift1 = new Array(n);
+        for (let j = 0; j < n; j++) { const i = c0.i0 + j; idx[j] = i; real[j] = p[i - 1]; pers[j] = p[i - 1 - tl]; shift1[j] = p[i - 2]; }
+        cache = { idx, real, pred: c0.pred, pers, shift1 };
+      }
+      return cache;
+    } });
+  }
+  // Abruzzo: the classic persistence (value TL hours before) is used as a reference only up to this horizon
+  const ABR_PERS_MAX_TL = 3;
 
   const DEFAULTS = {
     theme: 'auto',
@@ -55,7 +93,9 @@
     exoVis: EXO.lstmvis.length ? exoPref.id : null,
     galPart: 'all', galGroup: 'all',
     expModel: ABR.configs.some(c => ABR_SEASONS.some(s => c.seasons[s.key].csv)) ? 'abr' : 'exo',
-    expSeasonAbr: 'Primavera2021', expSeasonExo: 'Estate_3', expCfgsAbr: [abrPref.id], expCfgsExo: [exoPref.id],
+    gdMetric: 'mae', gdSamples: 'last20', gdAxis: 'samples', gdPers: true, gdCells: 64,
+    cmpMode: 'sep', cmpMetric: 'mae', cmpCells: 64, cmpSeason: 'mean',
+    expSeasonAbr: 'Primavera2021', expSeasonExo: 'Estate_3', expCfgsAbr: [abrPref.id], expCfgsExo: ['exo:' + exoPref.id],
     expSlotsAbr: {}, expSlotsExo: {}, expPers: true, expYest: false, expErr: true, expUnit: 'samples',
     archGroup: 'abr', arch_reg: 'mlp', arch_abr: abrPref.id, arch_exo: exoPref.id,
   };
@@ -74,6 +114,9 @@
   if (!EXO_SEASONS.some(s => s.key === S.expSeasonExo)) S.expSeasonExo = DEFAULTS.expSeasonExo;
   for (const k of ['expCfgsAbr', 'expCfgsExo']) if (!Array.isArray(S[k])) S[k] = DEFAULTS[k].slice();
   for (const k of ['expSlotsAbr', 'expSlotsExo']) if (!S[k] || typeof S[k] !== 'object' || Array.isArray(S[k])) S[k] = {};
+  // explorer ids of Generation_data are now "<family>:<config>"
+  S.expCfgsExo = S.expCfgsExo.map(id => String(id).includes(':') ? id : 'exo:' + id);
+  if (Object.keys(S.expSlotsExo).some(k => !k.includes(':'))) S.expSlotsExo = {};
   function save() { store.set('state', S); }
   function set(k, v) { S[k] = v; save(); render(true); }
 
@@ -266,19 +309,19 @@
     { value: 'mape', label: 'MAPE diurno [%]', unit: '%', d: 1, kind: 'seq' },
     { value: 'nmae_nom', label: 'nMAE sulla potenza nominale [%]', unit: '%', d: 2, kind: 'seq' },
     { value: 'nmae_mean', label: "nMAE sull'energia media [%]", unit: '%', d: 1, kind: 'seq' },
-    { value: 'skill_pers', label: 'Miglioramento vs persistenza [%]', unit: '%', d: 1, kind: 'div' },
+    { value: 'skill_pers', label: 'Miglioramento vs persistenza (solo TL ≤ 3 h) [%]', unit: '%', d: 1, kind: 'div' },
     { value: 'skill_yest', label: 'Miglioramento vs stessa ora di ieri [%]', unit: '%', d: 1, kind: 'div' },
   ];
   function abrMae(s) { return s.csv ? s.csv.mae : s.file ? s.file.mae : null; }
   function abrMape(s) { return s.csv ? s.csv.mape_day : s.file ? s.file.mape_day : null; }
-  function abrSeasonVal(s, m) {
+  function abrSeasonVal(s, m, tl) {
     if (m === 'mape') return abrMape(s);
     const mae = abrMae(s); if (mae == null) return null;
     switch (m) {
       case 'mae': return mae;
       case 'nmae_nom': return 100 * mae / P_NOM;
       case 'nmae_mean': return 100 * mae / s.base.mean_real;
-      case 'skill_pers': return 100 * (1 - mae / s.base.pers.mae);
+      case 'skill_pers': return tl > ABR_PERS_MAX_TL ? null : 100 * (1 - mae / s.base.pers.mae);
       case 'skill_yest': return 100 * (1 - mae / s.base.yest.mae);
     }
     return null;
@@ -292,8 +335,8 @@
     return null;
   }
   function abrVal(c, m, season) {
-    if (season !== 'mean') return abrSeasonVal(c.seasons[season], m);
-    const v = ABR_SEASONS.map(s => abrSeasonVal(c.seasons[s.key], m));
+    if (season !== 'mean') return abrSeasonVal(c.seasons[season], m, c.tl);
+    const v = ABR_SEASONS.map(s => abrSeasonVal(c.seasons[s.key], m, c.tl));
     return v.some(x => x == null) ? null : mean(v);
   }
   function abrHasData(c) { return ABR_SEASONS.every(s => abrMae(c.seasons[s.key]) != null); }
@@ -322,10 +365,7 @@
     }
     return null;
   }
-  function exoVal(c, m, season, ofPers) {
-    if (season !== 'mean') { const s = c.seasons[season]; return s ? exoSeasonVal(s, m, ofPers) : null; }
-    return mean(EXO_SEASONS.map(s => c.seasons[s.key]).filter(Boolean).map(s => exoSeasonVal(s, m, ofPers)));
-  }
+  function exoVal(c, m, season, ofPers) { return gdVal(EXO, c, m, season, ofPers); }
   function exoConfig(id) { return EXO.configs.find(c => c.id === id) || exoPref; }
   function exoMetricDef(v) { return EXO_METRICS.find(m => m.value === v) || EXO_METRICS[0]; }
   function exoDesc(c) { return `TH ${c.th} passi (${c.th * EXO.step_min} min) · TL ${c.tl} passi (${c.tl * EXO.step_min} min) · ${c.cells} celle`; }
@@ -365,7 +405,9 @@
     { id: 'panoramica', label: 'Panoramica', render: viewOverview },
     { id: 'regressione', label: 'Regressione', render: viewRegression },
     { id: 'endogena', label: 'LSTM endogena (Abruzzo)', render: viewAbruzzo },
-    { id: 'esogena', label: 'LSTM esogena', render: viewExogenous },
+    { id: 'esogena', label: 'LSTM esogena', render: () => viewGD('exo') },
+    { id: 'endogena-gd', label: 'LSTM endogena (Generation data)', render: () => viewGD('endo') },
+    { id: 'confronto', label: 'Endogena vs esogena', render: viewCompare },
     { id: 'esplora', label: 'Esplora il test', render: viewExplorer },
     { id: 'architetture', label: 'Architetture', render: viewArchitectures },
     { id: 'grafici', label: 'Grafici originali', render: viewGallery },
@@ -444,13 +486,14 @@
       rows.push({ part: 'LSTM endogena', key: 'abr-' + c.id, name: c.id, task: 'Previsione', step: '1 h',
         th: c.th + ' h', tl: c.tl + ' h', cells: c.cells, mae: abrVal(c, 'mae', 'mean'), unit: 'kWh',
         nmae_mean: abrVal(c, 'nmae_mean', 'mean'), nmae_ref: abrVal(c, 'nmae_nom', 'mean'),
-        skill: abrVal(c, 'skill_pers', 'mean'), r2: null, src: srcs, _hl: c.preferred });
+        skill: abrVal(c, 'skill_yest', 'mean'), r2: null, src: srcs, _hl: c.preferred });
     }
-    for (const c of EXO.configs) {
-      rows.push({ part: 'LSTM esogena', key: 'exo-' + c.id, name: c.id, task: 'Previsione', step: '5 min (stima)',
+    for (const fk of ['exo', 'endo', 'exoJ', 'endoJ']) for (const c of GD[fk].configs) {
+      const F = GD[fk];
+      rows.push({ part: GD_PART[fk], key: fk + '-' + c.id, name: c.id, task: 'Previsione', step: '5 min (stima)',
         th: `${c.th} passi (${c.th * EXO.step_min} min)`, tl: `${c.tl} passi (${c.tl * EXO.step_min} min)`, cells: c.cells,
-        mae: exoVal(c, 'mae', 'mean'), unit: 'kW', nmae_mean: exoVal(c, 'nmae_mean', 'mean'), nmae_ref: exoVal(c, 'nmae_ref', 'mean'),
-        skill: exoVal(c, 'skill', 'mean'), r2: exoVal(c, 'r2', 'mean'), src: 'CSV ricalcolato', _hl: c.preferred });
+        mae: gdVal(F, c, 'mae', 'mean'), unit: 'kW', nmae_mean: gdVal(F, c, 'nmae_mean', 'mean'), nmae_ref: gdVal(F, c, 'nmae_ref', 'mean'),
+        skill: gdVal(F, c, 'skill', 'mean'), r2: gdVal(F, c, 'r2', 'mean'), src: F.joined ? 'CSV ricalcolato (ultimo 20 % anno 3)' : 'CSV ricalcolato', _hl: c.preferred });
     }
     return rows;
   }
@@ -467,8 +510,7 @@
         [fact('R²', fmt(best.r2, 4)), fact('nMAE media', fmt(best.nmae, 2) + ' %'), fact('nMAE rif.', fmt(best.nmae_ref, 2) + ' %')]),
       tile('LSTM endogena (Abruzzo)', `${abrPref.id} · configurazione preferita`, abrAvail ? fmt(abrVal(abrPref, 'mae', 'mean'), 2) : '—', 'kWh MAE',
         abrAvail ? [fact('nMAE nominale', fmt(abrVal(abrPref, 'nmae_nom', 'mean'), 2) + ' %'),
-          h('span', null, 'vs persistenza ', signed(abrVal(abrPref, 'skill_pers', 'mean'))),
-          h('span', null, 'vs ieri ', signed(abrVal(abrPref, 'skill_yest', 'mean')))] : [h('span', null, 'metriche non disponibili')]),
+          h('span', null, 'vs stessa ora di ieri ', signed(abrVal(abrPref, 'skill_yest', 'mean')))] : [h('span', null, 'metriche non disponibili')]),
       tile('LSTM esogena', `${exoPref.id} · configurazione preferita`, fmt(exoVal(exoPref, 'mae', 'mean'), 2), 'kW MAE',
         [fact('nMAE rif.', fmt(exoVal(exoPref, 'nmae_ref', 'mean'), 2) + ' %'), fact('R²', fmt(exoVal(exoPref, 'r2', 'mean'), 3)),
           h('span', null, 'vs persistenza ', signed(exoVal(exoPref, 'skill', 'mean')))]),
@@ -477,7 +519,7 @@
     const OV = [
       { value: 'nmae_ref', label: 'nMAE sulla potenza di riferimento [%]', d: 2, unit: '%' },
       { value: 'nmae_mean', label: 'nMAE sulla potenza media misurata [%]', d: 1, unit: '%' },
-      { value: 'skill', label: 'Miglioramento vs persistenza [%]', d: 1, unit: '%' },
+      { value: 'skill', label: 'Miglioramento vs riferimento ingenuo [%]', d: 1, unit: '%' },
       { value: 'mae', label: 'MAE assoluto [kW o kWh/h]', d: 2, unit: '' },
     ];
     const met = OV.find(o => o.value === S.ovMetric) || OV[0];
@@ -487,13 +529,13 @@
       checkCtl('Includi la baseline della regressione (media)', S.ovBaseline, v => set('ovBaseline', v)),
     ));
     let rows = overviewRows().filter(r => S.ovBaseline || !r.baseline).filter(r => r[met.value] != null);
-    const order = ['Regressione', 'LSTM endogena', 'LSTM esogena'];
+    const order = ['Regressione', 'LSTM endogena', 'LSTM esogena', GD_PART.endo, GD_PART.exoJ, GD_PART.endoJ];
     rows.sort((a, b) => order.indexOf(a.part) - order.indexOf(b.part) || a[met.value] - b[met.value]);
     const labels = rows.map(r => `${r.part} · ${r.name}`);
     const div = chartDiv();
     div.style.height = Math.max(260, rows.length * 30 + 90) + 'px';
     const desc = met.value === 'skill'
-      ? 'La regressione non compare: stima la potenza nello stesso istante, quindi non ha un riferimento di persistenza.'
+      ? 'Riferimento: stessa ora del giorno prima per l\'Abruzzo, persistenza (ultimo valore noto, TL passi prima) per Generation data. La regressione non compare: stima la potenza nello stesso istante.'
       : met.value === 'mae' ? 'Attenzione: l\'Abruzzo è in kWh per ora (equivalenti a kW medi nell\'ora) su un impianto da 995,67 kWp; gli altri in kW su Generation_data. I valori assoluti non sono confrontabili tra le parti.'
       : met.value === 'nmae_ref' ? `Riferimento: 995,67 kWp per l'Abruzzo; per Generation_data la potenza nominale non è nota e si usa la potenza massima misurata (${fmt(P_MAX, 1)} kW).`
       : 'Errore medio diviso la potenza (o energia) media misurata nel test. Nell\'Abruzzo la media comprende le ore notturne a produzione nulla.';
@@ -520,7 +562,7 @@
         { key: 'mae', label: 'MAE', num: true, render: r => fmt(r.mae, 2) + ' ' + r.unit },
         { key: 'nmae_ref', label: 'nMAE rif. %', num: true, fmt: v => fmt(v, 2) },
         { key: 'nmae_mean', label: 'nMAE media %', num: true, fmt: v => fmt(v, 1) },
-        { key: 'skill', label: 'vs persistenza', num: true, render: r => signed(r.skill) },
+        { key: 'skill', label: 'vs riferimento', num: true, render: r => signed(r.skill), title: 'Abruzzo: stessa ora di ieri; Generation data: persistenza' },
         { key: 'r2', label: 'R²', num: true, fmt: v => fmt(v, 3) },
         { key: 'src', label: 'Fonte' },
       ], overviewRows())));
@@ -679,7 +721,7 @@
 
     // skill vs naive baselines
     const sk = chartDiv('short');
-    g1.append(card('La rete batte i riferimenti ingenui?', 'Riduzione percentuale del MAE rispetto alla persistenza (ultimo valore noto, TL ore prima) e alla stessa ora del giorno prima. Sopra zero = la rete è migliore.', sk));
+    g1.append(card('La rete batte i riferimenti ingenui?', `Riduzione percentuale del MAE rispetto alla stessa ora del giorno prima (riferimento principale, per ogni TL) e alla persistenza (ultimo valore noto, TL ore prima), quest'ultima solo per TL ≤ ${ABR_PERS_MAX_TL} h: con orizzonti lunghi sposta i picchi di mezzogiorno nelle ore sbagliate (vedi Definizioni e note). Sopra zero = la rete è migliore.`, sk));
     const withData = ABR.configs.filter(x => S.abrSeason === 'mean' ? abrHasData(x) : abrMae(x.seasons[S.abrSeason]) != null);
     if (!withData.length) sk.replaceWith(emptyBox('Nessun dato.'));
     else {
@@ -699,9 +741,9 @@
     const cellSet = [12, 24, 36, 128].map(n => ABR.configs.find(x => x.th === 72 && x.tl === 1 && x.cells === n));
     const tlSet = [1, 2, 3].map(t => ABR.configs.find(x => x.th === 72 && x.tl === t && x.cells === 36));
     function seriesBySeason(div, cfgs, xs, xTitle, name) {
-      const have = cfgs.filter(Boolean).filter(cf => ABR_SEASONS.some(s => abrSeasonVal(cf.seasons[s.key], met.value) != null));
+      const have = cfgs.filter(Boolean).filter(cf => ABR_SEASONS.some(s => abrSeasonVal(cf.seasons[s.key], met.value, cf.tl) != null));
       if (have.length < 2) { div.replaceWith(emptyBox('Dati non ancora disponibili per questo confronto.', 'Rilancia gli script corrispondenti in MATLAB e aggiorna la dashboard.')); return; }
-      const tr = ABR_SEASONS.map((s, i) => lineT(xs, cfgs.map(cf => cf ? abrSeasonVal(cf.seasons[s.key], met.value) : null), s.label, c[['s1', 's2', 's3', 's4'][i]],
+      const tr = ABR_SEASONS.map((s, i) => lineT(xs, cfgs.map(cf => cf ? abrSeasonVal(cf.seasons[s.key], met.value, cf.tl) : null), s.label, c[['s1', 's2', 's3', 's4'][i]],
         { mode: 'lines+markers', marker: { size: 8, color: c[['s1', 's2', 's3', 's4'][i]], line: { color: c.surface, width: 2 } } }));
       tr.push(lineT(xs, cfgs.map(cf => cf ? abrVal(cf, met.value, 'mean') : null), 'Media', c.text1, { mode: 'lines+markers', line: { color: c.text1, width: 2.5 }, marker: { size: 9, color: c.text1, line: { color: c.surface, width: 2 } } }));
       plot(div, tr, { hovermode: 'x unified', xaxis: { title: { text: xTitle }, type: 'category' }, yaxis: { title: { text: met.label } } }, name);
@@ -718,15 +760,17 @@
     view.append(filters(
       selectCtl('Configurazione', ABR.configs.map(x => ({ value: x.id, label: x.id + (x.preferred ? ' · preferita' : '') + (abrHasCsv(x) ? '' : abrHasData(x) ? ' · solo metriche' : ' · solo grafici') })), cf.id, v => set('abrConfig', v)),
       selectCtl('Stagione', ABR_SEASONS.map(s => ({ value: s.key, label: s.label })), S.abrDetSeason, v => set('abrDetSeason', v)),
-      checkCtl('Persistenza', S.abrPers, v => set('abrPers', v)),
+      checkCtl('Misura traslata di 1 h', S.abrPers, v => set('abrPers', v)),
       checkCtl('Stessa ora di ieri', S.abrYest, v => set('abrYest', v)),
     ));
     const s = cf.seasons[S.abrDetSeason];
     const mae = abrMae(s);
     view.append(h('div', { class: 'grid four' },
       tile('MAE della rete', `${cf.id} · ${seasonLabel(S.abrDetSeason)}`, fmt(mae, 2), 'kWh', [fact('MAPE diurno', fmt(abrMape(s), 1) + ' %'), fact('Fonte', s.csv ? 'CSV' : s.file ? 'Metrics.txt' : '—')]),
-      tile('Persistenza', 'valore di TL ore prima', fmt(s.base.pers.mae, 2), 'kWh', [h('span', null, 'rete ', signed(abrSeasonVal(s, 'skill_pers')))]),
-      tile('Stessa ora di ieri', 'valore di 24 ore prima', fmt(s.base.yest.mae, 2), 'kWh', [h('span', null, 'rete ', signed(abrSeasonVal(s, 'skill_yest')))]),
+      cf.tl <= ABR_PERS_MAX_TL
+        ? tile('Persistenza', `ultimo valore noto (${cf.tl} h prima)`, fmt(s.base.pers.mae, 2), 'kWh', [h('span', null, 'rete ', signed(abrSeasonVal(s, 'skill_pers', cf.tl)))])
+        : tile('Persistenza', `non usata con TL = ${cf.tl} h`, '—', null, [h('span', null, 'riferimento: stessa ora di ieri')]),
+      tile('Stessa ora di ieri', 'valore di 24 ore prima', fmt(s.base.yest.mae, 2), 'kWh', [h('span', null, 'rete ', signed(abrSeasonVal(s, 'skill_yest', cf.tl)))]),
       tile('Test', `${s.base.t_start.slice(0, 16)} → ${s.base.t_end.slice(0, 16)}`, fmt(s.base.n_test, 0), 'ore',
         [fact('Energia media', fmt(s.base.mean_real, 1) + ' kWh'), s.csv ? fact('R²', fmt(s.csv.r2, 3)) : null]),
     ));
@@ -743,7 +787,7 @@
       const sr = s.series;
       const tr = [lineT(sr.t, sr.real, 'Misurata', c[ROLE.measured], { hovertemplate: '<b>%{y:.1f} kWh</b> misurata<extra></extra>' }),
         lineT(sr.t, sr.pred, 'Prevista (LSTM)', c[ROLE.model], { hovertemplate: '<b>%{y:.1f} kWh</b> LSTM<extra></extra>' })];
-      if (S.abrPers) tr.push(lineT(sr.t, sr.pers, `Persistenza (${cf.tl} h prima)`, c[ROLE.pers], { line: { color: c[ROLE.pers], width: 1.5 }, hovertemplate: '<b>%{y:.1f} kWh</b> persistenza<extra></extra>' }));
+      if (S.abrPers) tr.push(lineT(sr.t, sr.shift1, 'Misura traslata di 1 h', c[ROLE.pers], { line: { color: c[ROLE.pers], width: 1.5 }, hovertemplate: '<b>%{y:.1f} kWh</b> misura 1 h prima<extra></extra>' }));
       if (S.abrYest) tr.push(lineT(sr.t, sr.yest, 'Stessa ora di ieri', c[ROLE.yest], { line: { color: c[ROLE.yest], width: 1.5 }, hovertemplate: '<b>%{y:.1f} kWh</b> ieri<extra></extra>' }));
       plot(ts, tr, { hovermode: 'x unified', xaxis: { type: 'date', rangeslider: { visible: true, thickness: 0.08, bgcolor: c.surface2, bordercolor: c.axis }, tickformat: '%d/%m %H:%M' },
         yaxis: { title: { text: 'Energia [kWh]' }, rangemode: 'tozero' } }, `abruzzo_${cf.id}_${S.abrDetSeason}`);
@@ -756,8 +800,8 @@
       const byHour = arrK => { const s2 = Array(24).fill(0), n = Array(24).fill(0); sr.hour.forEach((hh, i) => { if (arrK[i] != null && sr.real[i] != null) { s2[hh] += Math.abs(arrK[i] - sr.real[i]); n[hh]++; } }); return s2.map((v, i) => n[i] ? v / n[i] : null); };
       const hrs = [...Array(24).keys()];
       const htr = [lineT(hrs, byHour(sr.pred), 'LSTM', c[ROLE.model], { mode: 'lines+markers', marker: { size: 7, color: c[ROLE.model] } }),
-        lineT(hrs, byHour(sr.pers), 'Persistenza', c[ROLE.pers], { mode: 'lines+markers', marker: { size: 7, color: c[ROLE.pers] } }),
         lineT(hrs, byHour(sr.yest), 'Stessa ora di ieri', c[ROLE.yest], { mode: 'lines+markers', marker: { size: 7, color: c[ROLE.yest] } })];
+      if (cf.tl <= ABR_PERS_MAX_TL) htr.splice(1, 0, lineT(hrs, byHour(sr.pers), `Persistenza (${cf.tl} h prima)`, c[ROLE.pers], { mode: 'lines+markers', marker: { size: 7, color: c[ROLE.pers] } }));
       plot(dh, htr, { hovermode: 'x unified', xaxis: { title: { text: 'Ora del giorno' }, dtick: 2 }, yaxis: { title: { text: 'MAE [kWh]' }, rangemode: 'tozero' } }, 'abruzzo_errore_ora');
       bestK.v = lagChart(dl, sr.real, sr.pred, cf.tl, 'kWh', 'h');
       lagCard.querySelector('.card-head > div').append(h('p', { class: 'desc' },
@@ -768,12 +812,12 @@
     const rows = [];
     for (const x of ABR.configs) for (const ss of ABR_SEASONS) {
       const e = x.seasons[ss.key];
-      rows.push({ cfg: x.id, season: ss.label, n: e.base.n_test, mae: abrMae(e), mape: abrMape(e), pers: e.base.pers.mae, yest: e.base.yest.mae,
-        skp: abrSeasonVal(e, 'skill_pers'), sky: abrSeasonVal(e, 'skill_yest'), nnom: abrSeasonVal(e, 'nmae_nom'),
+      rows.push({ cfg: x.id, season: ss.label, n: e.base.n_test, mae: abrMae(e), mape: abrMape(e), pers: x.tl <= ABR_PERS_MAX_TL ? e.base.pers.mae : null, yest: e.base.yest.mae,
+        skp: abrSeasonVal(e, 'skill_pers', x.tl), sky: abrSeasonVal(e, 'skill_yest', x.tl), nnom: abrSeasonVal(e, 'nmae_nom', x.tl),
         src: e.csv ? 'CSV' : e.file ? 'Metrics.txt' : '—', d: e.csv && e.file ? e.csv.mae - e.file.mae : null, _hl: x.preferred });
     }
     view.append(sectionTitle('Tutte le configurazioni'));
-    view.append(card('Tabella completa', 'Persistenza e stessa ora di ieri sono calcolate dai dati misurati sugli stessi campioni di test. "Δ" confronta il MAE ricalcolato dal CSV con Metrics.txt.',
+    view.append(card('Tabella completa', `Persistenza e stessa ora di ieri sono calcolate dai dati misurati sugli stessi campioni di test; la persistenza è riportata solo per TL ≤ ${ABR_PERS_MAX_TL} h. "Δ" confronta il MAE ricalcolato dal CSV con Metrics.txt.`,
       table([
         { key: 'cfg', label: 'Configurazione' }, { key: 'season', label: 'Stagione' }, { key: 'n', label: 'Ore test', num: true },
         { key: 'mae', label: 'MAE [kWh]', num: true, fmt: v => fmt(v, 2) }, { key: 'mape', label: 'MAPE diurno [%]', num: true, fmt: v => fmt(v, 1) },
@@ -816,106 +860,158 @@
     { showlegend: false, margin: { t: 20 }, yaxis: { title: { text: 'Varianza spiegata [%]' }, rangemode: 'tozero' } }, 'lstmvis_varianza');
   }
 
-  // ================================================================== VIEW: exogenous
-  function viewExogenous() {
+  // ================================================================== Generation_data: shared pieces
+  // TH x TL heatmap; valFn(th, tl) -> value or null
+  function gridHeat(div, ths, tls, valFn, met, diverging, name) {
     const c = C();
-    const met = exoMetricDef(S.exoMetric);
-    view.append(h('div', { class: 'view-head' }, h('h2', null, 'Parte 3 · LSTM esogena'),
-      h('p', null, 'Previsione della potenza AC di Generation_data usando come serie temporali la potenza passata e le quattro variabili della regressione. Un modello per stagione (11); test = ultimo 20 %. Passo stimato 5 minuti; TH e TL sono in passi.')));
-    view.append(filters(selectCtl('Metrica', EXO_METRICS, met.value, v => set('exoMetric', v))));
+    const z = ths.map(th => tls.map(tl => valFn(th, tl)));
+    const vals = z.flat().filter(v => v != null && isFinite(v));
+    if (!vals.length) { div.replaceWith(emptyBox('Nessun valore disponibile.')); return; }
+    let zmin = Math.min(...vals), zmax = Math.max(...vals), stops = c.seq;
+    if (diverging) { const a = Math.max(...vals.map(Math.abs)) || 1; zmin = -a; zmax = a; stops = c.div; }
+    if (zmax === zmin) zmax = zmin + 1;
+    const xl = tls.map(t => `TL ${t}`), yl = ths.map(t => `TH ${t}`);
+    const ann = [];
+    ths.forEach((th, i) => tls.forEach((tl, j) => {
+      const v = z[i][j];
+      const col = v == null ? c.muted : (lum(scaleColor(stops, (v - zmin) / (zmax - zmin))) > 0.35 ? '#0b0b0b' : '#ffffff');
+      ann.push({ x: xl[j], y: yl[i], text: v == null ? '—' : (diverging && v > 0 ? '+' : '') + fmt(v, met.d) + (met.unit === '%' ? ' %' : ''), showarrow: false, font: { color: col, size: 12 } });
+    }));
+    plot(div, [{ type: 'heatmap', x: xl, y: yl, z, zmin, zmax, colorscale: toScale(stops), xgap: 3, ygap: 3, hoverongaps: false,
+      colorbar: { thickness: 10, outlinewidth: 0, tickfont: { color: c.muted, size: 11 } },
+      hovertemplate: `%{y} · %{x} passi<br><b>%{z:.${met.d}f} ${met.unit}</b><extra></extra>` }],
+    { margin: { l: 64, r: 10, t: 10, b: 36 }, annotations: ann,
+      xaxis: { type: 'category', showline: false, gridcolor: 'rgba(0,0,0,0)' },
+      yaxis: { type: 'category', showline: false, gridcolor: 'rgba(0,0,0,0)', autorange: 'reversed' } }, name);
+  }
+  function gdCfg(F, th, tl, cells) { return F.configs.find(x => x.th === th && x.tl === tl && x.cells === cells) || null; }
+  function cellsOf(...fams) { return [...new Set(fams.flatMap(F => F.configs.map(x => x.cells)))].sort((a, b) => a - b); }
+  function axesOf(cells, ...fams) {
+    const cf = fams.flatMap(F => F.configs.filter(x => x.cells === cells));
+    return { ths: [...new Set(cf.map(x => x.th))].sort((a, b) => a - b), tls: [...new Set(cf.map(x => x.tl))].sort((a, b) => a - b) };
+  }
+  // mean over the seasons that both configurations have (or over one configuration's seasons)
+  function commonKeys(F, a, b) { return F.seasons.map(s => s.key).filter(k => (!a || a.seasons[k]) && (!b || b.seasons[k])); }
+  function meanOn(keys, cf, m, ofPers, samples) { return cf ? mean(keys.map(k => exoSeasonVal(gdView(cf.seasons[k], samples), m, ofPers))) : null; }
+  const LOWER_BETTER = { mae: true, mape: true, wmape: true, nmae_mean: true, nmae_ref: true, skill: false, r2: false };
+  // positive = the exogenous network is better
+  function advantage(m, endoV, exoV) { if (endoV == null || exoV == null) return null; return LOWER_BETTER[m] ? endoV - exoV : exoV - endoV; }
 
-    const d1 = chartDiv('');
-    view.append(card(`${met.label} per stagione`, met.value === 'skill' ? 'Sopra zero = la rete è migliore della persistenza.' : 'In grigio la persistenza per ciascun orizzonte: scura per TL 1 (da confrontare con TH6-TL1-64), chiara per TL 6 (da confrontare con le due configurazioni TH12-TL6).', d1));
-    const xs = EXO_SEASONS.map(s => s.label);
-    const tr = EXO.configs.map(cf => ({ type: 'bar', name: cf.id + (cf.preferred ? ' (preferita)' : ''), x: xs,
-      y: EXO_SEASONS.map(s => exoVal(cf, met.value, s.key)), marker: { color: exoColor(c, cf.id) },
-      hovertemplate: `${cf.id}<br>%{x}: <b>%{y:.${met.d}f} ${met.unit}</b><extra></extra>` }));
-    if (met.value !== 'skill') {
-      const tls = [...new Set(EXO.configs.map(x => x.tl))];
-      for (const tl of tls) {
-        const ref = EXO.configs.find(x => x.tl === tl);
-        tr.push({ type: 'bar', name: `Persistenza (TL ${tl})`, x: xs, y: EXO_SEASONS.map(s => exoVal(ref, met.value, s.key, true)),
-          marker: { color: c.neutral, opacity: tl === exoPref.tl ? 1 : 0.55 },
-          hovertemplate: `Persistenza TL ${tl}<br>%{x}: <b>%{y:.${met.d}f} ${met.unit}</b><extra></extra>` });
-      }
-    }
-    plot(d1, tr, { barmode: 'group', yaxis: { title: { text: met.label }, zeroline: true, zerolinecolor: c.axis } }, 'esogena_per_stagione');
+  // ================================================================== VIEW: Generation_data networks (exogenous / endogenous)
+  function viewGD(base) {
+    const c = C();
+    const mode = S['gdMode_' + base] === 'joined' ? 'joined' : 'sep';
+    const fk = gdFam(base, mode), F = GD[fk], joined = mode === 'joined', isEndo = base === 'endo';
+    const met = exoMetricDef(S.gdMetric);
+    const seasons = F.seasons;
+    view.append(h('div', { class: 'view-head' }, h('h2', null, isEndo ? 'Parte 3b · LSTM endogena su Generation data' : 'Parte 3 · LSTM esogena'),
+      h('p', null, 'Previsione della potenza AC di Generation_data ' +
+        (isEndo ? 'usando solo la potenza passata (un canale), con le stesse impostazioni della rete esogena. ' : 'usando come serie temporali la potenza passata e le quattro variabili della regressione. ') +
+        (joined ? 'Anni uniti: per ogni stagione la rete è addestrata sugli anni 1 e 2 e provata su tutto il foglio dell\'anno 3 (Primavera: solo anno 2, perché Primavera_1 non esiste). ' : 'Un modello per foglio (11 fogli); test = ultimo 20 % delle finestre di ogni foglio. ') +
+        'Passo stimato 5 minuti; TH e TL sono in passi.')));
+    const ctl = [segCtl('Addestramento', [{ value: 'sep', label: 'Stagioni separate' }, { value: 'joined', label: 'Anni uniti (1 + 2 → 3)' }], mode, v => set('gdMode_' + base, v)),
+      selectCtl('Metrica', EXO_METRICS, met.value, v => set('gdMetric', v))];
+    if (joined) ctl.push(segCtl('Campioni di test', [{ value: 'last20', label: 'Ultimo 20 % (come le reti per stagione)' }, { value: 'all', label: 'Tutto l\'anno 3' }], S.gdSamples, v => set('gdSamples', v)));
+    view.append(filters(...ctl));
+    if (F.pending && F.pending.length) view.append(callout(`Script senza risultati salvati (da lanciare o in esecuzione): ${F.pending.join(', ')}.`, true));
+    if (!F.configs.length) { view.append(emptyBox('Nessun risultato ancora disponibile per queste reti.', 'Quando gli script avranno finito, aggiorna la dashboard.')); return; }
 
-    const sum = EXO.configs.map(cf => ({ id: cf.id, desc: exoDesc(cf), lr: cf.lr, script: cf.script, mae: exoVal(cf, 'mae', 'mean'),
-      mape: exoVal(cf, 'mape', 'mean'), wmape: exoVal(cf, 'wmape', 'mean'), r2: exoVal(cf, 'r2', 'mean'),
-      pers: exoVal(cf, 'mae', 'mean', true), skill: exoVal(cf, 'skill', 'mean'), _hl: cf.preferred }));
-    view.append(card('Media delle 11 stagioni', 'Media semplice delle metriche delle stagioni. Le metriche sono ricalcolate dai file Risultati_<stagione>.csv con le stesse formule degli script.',
+    // TH x TL map
+    const cellsList = cellsOf(F);
+    const cells = cellsList.includes(Number(S.gdCells)) ? Number(S.gdCells) : cellsList[0];
+    const seasonOpts = [{ value: 'mean', label: `Media delle ${seasons.length} stagioni` }].concat(seasons.map(s => ({ value: s.key, label: s.label })));
+    const sKey = seasons.some(s => s.key === S['gdMapSeason_' + fk]) ? S['gdMapSeason_' + fk] : 'mean';
+    view.append(sectionTitle('Finestra (TH) e orizzonte (TL)'));
+    view.append(filters(selectCtl('Celle', cellsList.map(n => ({ value: n, label: n + ' celle' })), cells, v => set('gdCells', Number(v))),
+      selectCtl('Stagione', seasonOpts, sKey, v => set('gdMapSeason_' + fk, v))));
+    const { ths, tls } = axesOf(cells, F);
+    const g1 = h('div', { class: 'grid two' }); view.append(g1);
+    const hm = chartDiv('short'), hp = chartDiv('short');
+    g1.append(card(`${met.label} · ${cells} celle`, (sKey === 'mean' ? 'Media sulle stagioni. ' : seasonLabel(sKey) + '. ') + (met.value === 'skill' ? 'Blu = la rete batte la persistenza.' : 'Scala dei colori a destra.') + ' — = combinazione non provata.', hm));
+    g1.append(card('Persistenza sugli stessi campioni', 'Riferimento ingenuo: la misura di TL passi prima, cioè l\'ultimo valore noto quando si fa la previsione.', hp));
+    const v1 = (th, tl) => { const cf = gdCfg(F, th, tl, cells); return cf ? gdVal(F, cf, met.value, sKey) : null; };
+    gridHeat(hm, ths, tls, v1, met, met.value === 'skill', `${fk}_mappa`);
+    if (met.value === 'skill' || met.value === 'r2') hp.replaceWith(emptyBox('Per questa metrica la persistenza non ha un valore proprio: scegli un errore (MAE, MAPE, nMAE).'));
+    else gridHeat(hp, ths, tls, (th, tl) => { const cf = gdCfg(F, th, tl, cells); return cf ? gdVal(F, cf, met.value, sKey, true) : null; }, met, false, `${fk}_mappa_persistenza`);
+
+    const sum = F.configs.map(cf => ({ id: cf.id, desc: exoDesc(cf), lr: cf.lr, script: cf.script, n: Object.keys(cf.seasons).length,
+      mae: gdVal(F, cf, 'mae', 'mean'), mape: gdVal(F, cf, 'mape', 'mean'), wmape: gdVal(F, cf, 'wmape', 'mean'), r2: gdVal(F, cf, 'r2', 'mean'),
+      pers: gdVal(F, cf, 'mae', 'mean', true), skill: gdVal(F, cf, 'skill', 'mean'), _hl: cf.preferred }));
+    view.append(card(`Media delle stagioni (${seasons.length})`, 'Media semplice delle metriche delle stagioni. Le metriche sono ricalcolate dai file Risultati_<stagione>.csv con le stesse formule degli script.',
       table([{ key: 'id', label: 'Configurazione' }, { key: 'desc', label: 'Parametri' }, { key: 'lr', label: 'Learning rate', num: true },
+        { key: 'n', label: 'Stagioni', num: true },
         { key: 'mae', label: 'MAE [kW]', num: true, fmt: v => fmt(v, 2) }, { key: 'mape', label: 'MAPE diurno [%]', num: true, fmt: v => fmt(v, 1) },
         { key: 'wmape', label: 'wMAPE [%]', num: true, fmt: v => fmt(v, 1) }, { key: 'r2', label: 'R²', num: true, fmt: v => fmt(v, 3) },
         { key: 'pers', label: 'MAE persistenza', num: true, fmt: v => fmt(v, 2) }, { key: 'skill', label: 'vs persistenza', num: true, render: r => signed(r.skill) },
-        { key: 'script', label: 'Script' }], sum)));
+        { key: 'script', label: 'Script' }], sum, { sortKey: 'mae' })));
 
     // detail
     view.append(sectionTitle('Dettaglio di una configurazione'));
-    const cf = exoConfig(S.exoConfig);
+    const cfK = 'gdCfg_' + fk, ssK = 'gdSeason_' + fk;
+    const cf = F.configs.find(x => x.id === S[cfK]) || F.configs.find(x => x.preferred) || F.configs[0];
+    const avail = seasons.filter(s => cf.seasons[s.key]);
+    const sk = avail.some(s => s.key === S[ssK]) ? S[ssK] : (avail.find(s => s.key === 'Estate_3') || avail[0]).key;
     view.append(filters(
-      selectCtl('Configurazione', EXO.configs.map(x => ({ value: x.id, label: x.id + (x.preferred ? ' · preferita' : '') })), cf.id, v => set('exoConfig', v)),
-      selectCtl('Stagione', EXO_SEASONS.map(s => ({ value: s.key, label: s.label })), S.exoSeason, v => set('exoSeason', v)),
-      segCtl('Asse orizzontale', [{ value: 'samples', label: 'Riga del foglio' }, { value: 'hours', label: 'Ore (stima 5 min)' }], S.exoAxis, v => set('exoAxis', v)),
-      checkCtl('Persistenza', S.exoPers, v => set('exoPers', v)),
+      selectCtl('Configurazione', F.configs.map(x => ({ value: x.id, label: x.id + (x.preferred ? ' · preferita' : '') })), cf.id, v => set(cfK, v)),
+      selectCtl('Stagione', avail.map(s => ({ value: s.key, label: s.label })), sk, v => set(ssK, v)),
+      segCtl('Asse orizzontale', [{ value: 'samples', label: 'Riga del foglio' }, { value: 'hours', label: 'Ore (stima 5 min)' }], S.gdAxis, v => set('gdAxis', v)),
+      checkCtl('Misura traslata di 1 passo', S.gdPers, v => set('gdPers', v)),
     ));
-    const s = cf.seasons[S.exoSeason];
-    if (!s) { view.append(emptyBox('Nessun risultato per questa stagione.')); return; }
-    const m = s.metrics;
+    const raw = cf.seasons[sk], s = gdView(raw), m = s.metrics;
     view.append(h('div', { class: 'grid four' },
-      tile('MAE della rete', `${cf.id} · ${seasonLabel(S.exoSeason)}`, fmt(m.mae, 2), 'kW', [fact('RMSE', fmt(m.rmse, 2)), fact('R²', fmt(m.r2, 3))]),
-      tile('Persistenza', `valore di ${cf.tl} passi prima`, fmt(s.pers.mae, 2), 'kW', [h('span', null, 'rete ', signed(exoSeasonVal(s, 'skill')))]),
+      tile('MAE della rete', `${cf.id} · ${seasonLabel(sk)}`, fmt(m.mae, 2), 'kW', [fact('RMSE', fmt(m.rmse, 2)), fact('R²', fmt(m.r2, 3))]),
+      tile('Persistenza', `ultimo valore noto (${cf.tl} passi prima)`, fmt(s.pers.mae, 2), 'kW', [h('span', null, 'rete ', signed(exoSeasonVal(s, 'skill')))]),
       tile('Errori percentuali', 'ore diurne (> 5 % del massimo)', fmt(m.mape_day, 1), '% MAPE', [fact('wMAPE', fmt(m.wmape_day, 1) + ' %')]),
-      tile('Test', exoDesc(cf), fmt(s.n_test, 0), 'campioni', [fact('su', fmt(s.n_series, 0) + ' righe'), fact('Potenza media', fmt(m.mean_real, 1) + ' kW')]),
+      tile('Test', exoDesc(cf), fmt(s.n_test, 0), 'campioni', [fact('su', fmt(raw.n_series, 0) + ' righe'),
+        joined ? fact('addestrata su', raw.train.join(' + ')) : fact('Potenza media', fmt(m.mean_real, 1) + ' kW')]),
     ));
-    const sr = s.series;
-    const x = S.exoAxis === 'hours' ? sr.idx.map(i => (i - sr.idx[0]) * EXO.step_min / 60) : sr.idx;
-    const xTitle = S.exoAxis === 'hours' ? 'Ore dall\'inizio del test (stima, notti escluse)' : 'Riga del foglio della stagione';
+    const sr = raw.series;
+    const x = S.gdAxis === 'hours' ? sr.idx.map(i => (i - sr.idx[0]) * EXO.step_min / 60) : sr.idx;
+    const xTitle = S.gdAxis === 'hours' ? 'Ore dall\'inizio del test (stima, notti escluse)' : 'Riga del foglio della stagione';
     const ts = chartDiv('tall');
-    view.append(card('Potenza misurata e prevista nel test', 'Le notti non sono nei dati: un giorno segue subito il precedente. All\'apertura è mostrato l\'inizio del test; usa la barra in basso per spostarti.', ts,
-      explorerButton('exo', cf.id, S.exoSeason)));
+    view.append(card('Potenza misurata e prevista nel test', 'Le notti non sono nei dati: un giorno segue subito il precedente. All\'apertura è mostrato l\'inizio del test; usa la barra in basso per spostarti.' +
+      (joined ? ' La linea verticale segna l\'inizio dell\'ultimo 20 %, cioè il test delle reti per stagione.' : ''), ts, explorerButton('exo', fk + ':' + cf.id, sk)));
     const tr2 = [lineT(x, sr.real, 'Misurata', c[ROLE.measured], { hovertemplate: '<b>%{y:.1f} kW</b> misurata<extra></extra>' }),
       lineT(x, sr.pred, 'Prevista (LSTM)', c[ROLE.model], { hovertemplate: '<b>%{y:.1f} kW</b> LSTM<extra></extra>' })];
-    if (S.exoPers) tr2.push(lineT(x, sr.pers, `Persistenza (${cf.tl} passi prima)`, c[ROLE.pers], { line: { color: c[ROLE.pers], width: 1.5 }, hovertemplate: '<b>%{y:.1f} kW</b> persistenza<extra></extra>' }));
+    if (S.gdPers) tr2.push(lineT(x, sr.shift1, 'Misura traslata di 1 passo (5 min)', c[ROLE.pers], { line: { color: c[ROLE.pers], width: 1.5 }, hovertemplate: '<b>%{y:.1f} kW</b> misura 1 passo prima<extra></extra>' }));
     const win = Math.min(x.length - 1, 288);
-    plot(ts, tr2, { hovermode: 'x unified', xaxis: { title: { text: xTitle }, range: [x[0], x[win]], rangeslider: { visible: true, thickness: 0.08, bgcolor: c.surface2, bordercolor: c.axis } },
-      yaxis: { title: { text: 'Potenza AC [kW]' }, rangemode: 'tozero' } }, `esogena_${cf.id}_${S.exoSeason}`);
+    const lay = { hovermode: 'x unified', xaxis: { title: { text: xTitle }, range: [x[0], x[win]], rangeslider: { visible: true, thickness: 0.08, bgcolor: c.surface2, bordercolor: c.axis } },
+      yaxis: { title: { text: 'Potenza AC [kW]' }, rangemode: 'tozero' } };
+    if (joined) {
+      const xi = sr.idx.indexOf(raw.last20_first);
+      if (xi >= 0) { const v = vline(x[xi], c.text2, 'inizio ultimo 20 %', 'right'); lay.shapes = [v.shape]; lay.annotations = [v.ann]; }
+    }
+    plot(ts, tr2, lay, `${fk}_${cf.id}_${sk}`);
 
     const g = h('div', { class: 'grid two' }); view.append(g);
     const dsc = chartDiv('square'), dl = chartDiv('square');
-    g.append(card('Previsione contro misura', 'Ogni punto è un campione di test; la retta è la previsione perfetta.', dsc));
+    g.append(card('Previsione contro misura', 'Ogni punto è un campione di test (tutto il test salvato nel CSV); la retta è la previsione perfetta.', dsc));
     const lagCard = card('Analisi del ritardo', null, dl); g.append(lagCard);
     const hi = Math.max(...sr.real, ...sr.pred);
     plot(dsc, [{ type: 'scattergl', mode: 'markers', x: sr.real, y: sr.pred, name: 'Campioni', marker: { size: 4, color: c[ROLE.model], opacity: 0.35 },
       hovertemplate: 'Misurata %{x:.1f} kW<br><b>Prevista %{y:.1f} kW</b><extra></extra>' },
     lineT([0, hi], [0, hi], 'Previsione perfetta', c.muted, { line: { color: c.muted, width: 1 }, hoverinfo: 'skip' })],
-    { showlegend: false, margin: { t: 16 }, xaxis: { title: { text: 'Potenza misurata [kW]' }, range: [0, hi * 1.02] }, yaxis: { title: { text: 'Potenza prevista [kW]' }, range: [0, hi * 1.02] } }, 'esogena_dispersione');
+    { showlegend: false, margin: { t: 16 }, xaxis: { title: { text: 'Potenza misurata [kW]' }, range: [0, hi * 1.02] }, yaxis: { title: { text: 'Potenza prevista [kW]' }, range: [0, hi * 1.02] } }, `${fk}_dispersione`);
     const k = lagChart(dl, sr.real, sr.pred, cf.tl, 'kW', 'passi');
     lagCard.querySelector('.card-head > div').append(h('p', { class: 'desc' },
       `MAE tra la previsione e la misura spostata di k passi. Se il minimo è a k = TL, la rete ripete l'ultimo valore noto. Qui il minimo è a k = ${k}.`));
 
-    // lag summary over seasons
-    const lagRows = [];
-    for (const x2 of EXO.configs) for (const ss of EXO_SEASONS) {
-      const e = x2.seasons[ss.key]; if (!e) continue;
-      const { ks, m: mm } = lagCurve(e.series.real, e.series.pred, -6, x2.tl + 8);
+    const lagRows = [], rows = [];
+    for (const x2 of F.configs) for (const ss of seasons) {
+      const e0 = x2.seasons[ss.key]; if (!e0) continue;
+      const e = gdView(e0);
+      const { ks, m: mm } = lagCurve(e0.series.real, e0.series.pred, -6, x2.tl + 8);
       let b = 0; mm.forEach((v, i) => { if (v != null && (mm[b] == null || v < mm[b])) b = i; });
       lagRows.push({ cfg: x2.id, tl: x2.tl, season: ss.label, k: ks[b], m0: mm[ks.indexOf(0)], mk: mm[b], _hl: x2.preferred });
-    }
-    view.append(card('Ritardo in tutte le stagioni', 'Per ogni configurazione e stagione: spostamento k con l\'errore minimo. k = 0 vuol dire previsione in fase; k = TL vuol dire che la rete si comporta come la persistenza.',
-      table([{ key: 'cfg', label: 'Configurazione' }, { key: 'tl', label: 'TL [passi]', num: true }, { key: 'season', label: 'Stagione' },
-        { key: 'k', label: 'k con MAE minimo', num: true }, { key: 'm0', label: 'MAE a k = 0 [kW]', num: true, fmt: v => fmt(v, 2) },
-        { key: 'mk', label: 'MAE minimo [kW]', num: true, fmt: v => fmt(v, 2) }], lagRows, { scroll: true })));
-
-    const rows = [];
-    for (const x2 of EXO.configs) for (const ss of EXO_SEASONS) {
-      const e = x2.seasons[ss.key]; if (!e) continue;
       rows.push({ cfg: x2.id, season: ss.label, n: e.n_test, mae: e.metrics.mae, rmse: e.metrics.rmse, r2: e.metrics.r2, mape: e.metrics.mape_day,
-        wmape: e.metrics.wmape_day, pers: e.pers.mae, skill: exoSeasonVal(e, 'skill'), src: e.metrics.source, _hl: x2.preferred });
+        wmape: e.metrics.wmape_day, pers: e.pers.mae, skill: exoSeasonVal(e, 'skill'), src: e0.metrics.source, _hl: x2.preferred });
     }
+    view.append(card('Ritardo in tutte le stagioni', 'Per ogni configurazione e stagione: spostamento k con l\'errore minimo (su tutto il test salvato). k = 0 vuol dire previsione in fase; k = TL vuol dire che la rete si comporta come la persistenza.',
+      tableToggle('Mostra tabella', table([{ key: 'cfg', label: 'Configurazione' }, { key: 'tl', label: 'TL [passi]', num: true }, { key: 'season', label: 'Stagione' },
+        { key: 'k', label: 'k con MAE minimo', num: true }, { key: 'm0', label: 'MAE a k = 0 [kW]', num: true, fmt: v => fmt(v, 2) },
+        { key: 'mk', label: 'MAE minimo [kW]', num: true, fmt: v => fmt(v, 2) }], lagRows, { scroll: true }))));
     view.append(sectionTitle('Tutte le configurazioni'));
-    view.append(card('Tabella completa', null, table([
+    view.append(card('Tabella completa', joined ? (S.gdSamples === 'last20' ? 'Metriche sull\'ultimo 20 % dell\'anno 3 (stessi campioni delle reti per stagione).' : 'Metriche su tutto il foglio dell\'anno 3.') : null, table([
       { key: 'cfg', label: 'Configurazione' }, { key: 'season', label: 'Stagione' }, { key: 'n', label: 'Campioni test', num: true },
       { key: 'mae', label: 'MAE [kW]', num: true, fmt: v => fmt(v, 2) }, { key: 'rmse', label: 'RMSE [kW]', num: true, fmt: v => fmt(v, 2) },
       { key: 'r2', label: 'R²', num: true, fmt: v => fmt(v, 3) }, { key: 'mape', label: 'MAPE diurno [%]', num: true, fmt: v => fmt(v, 1) },
@@ -923,7 +1019,111 @@
       { key: 'skill', label: 'vs persistenza', num: true, render: r => signed(r.skill) }, { key: 'src', label: 'File' },
     ], rows, { scroll: true })));
 
-    lstmvisSection(EXO.lstmvis, 'exoVis', 'Stati interni della rete (LSTMVis)', 'Stati nascosti esportati per l\'ultima stagione elaborata (Estate_3), proiettati sulle prime due componenti principali e colorati con il decile della potenza reale.');
+    lstmvisSection(F.lstmvis, 'gdVis_' + fk, 'Stati interni della rete (LSTMVis)', 'Stati nascosti esportati per l\'ultima stagione elaborata (Estate_3), proiettati sulle prime due componenti principali e colorati con il decile della potenza reale.');
+  }
+
+  // ================================================================== VIEW: endogenous vs exogenous (Generation_data)
+  function viewCompare() {
+    const c = C();
+    const mode = S.cmpMode === 'joined' ? 'joined' : 'sep', joined = mode === 'joined';
+    const FN = GD[gdFam('endo', mode)], FX = GD[gdFam('exo', mode)];
+    const met = exoMetricDef(S.cmpMetric);
+    view.append(h('div', { class: 'view-head' }, h('h2', null, 'LSTM endogena contro LSTM esogena (Generation data)'),
+      h('p', null, 'Stesse stagioni, stessi TH, TL e numero di celle: l\'unica differenza è l\'ingresso (solo la potenza passata, oppure potenza e variabili meteo). Le medie sono calcolate solo sulle stagioni che hanno entrambe le reti.')));
+    const ctl = [segCtl('Addestramento', [{ value: 'sep', label: 'Stagioni separate' }, { value: 'joined', label: 'Anni uniti (1 + 2 → 3)' }], mode, v => set('cmpMode', v)),
+      selectCtl('Metrica', EXO_METRICS, met.value, v => set('cmpMetric', v))];
+    if (joined) ctl.push(segCtl('Campioni di test', [{ value: 'last20', label: 'Ultimo 20 %' }, { value: 'all', label: 'Tutto l\'anno 3' }], S.gdSamples, v => set('gdSamples', v)));
+    const cellsList = cellsOf(FN, FX);
+    if (!cellsList.length) { view.append(filters(...ctl)); view.append(emptyBox('Nessun risultato disponibile per questo confronto.')); return; }
+    const cells = cellsList.includes(Number(S.cmpCells)) ? Number(S.cmpCells) : (cellsList.includes(64) ? 64 : cellsList[0]);
+    const seasons = FN.seasons.length ? FN.seasons : FX.seasons;
+    const sKey = seasons.some(s => s.key === S.cmpSeason) ? S.cmpSeason : 'mean';
+    ctl.push(selectCtl('Celle', cellsList.map(n => ({ value: n, label: n + ' celle' })), cells, v => set('cmpCells', Number(v))),
+      selectCtl('Stagione', [{ value: 'mean', label: 'Media sulle stagioni in comune' }].concat(seasons.map(s => ({ value: s.key, label: s.label }))), sKey, v => set('cmpSeason', v)));
+    view.append(filters(...ctl));
+    const lrN = [...new Set(FN.configs.filter(x => x.cells === cells).map(x => x.lr))], lrX = [...new Set(FX.configs.filter(x => x.cells === cells).map(x => x.lr))];
+    if (lrN.join() !== lrX.join() && lrN.length && lrX.length) view.append(callout(`Attenzione: con ${cells} celle i learning rate non coincidono (endogena ${lrN.join(', ')}, esogena ${lrX.join(', ')}).`));
+
+    const { ths, tls } = axesOf(cells, FN, FX);
+    const pair = (th, tl) => [gdCfg(FN, th, tl, cells), gdCfg(FX, th, tl, cells)];
+    const valOf = (F, cf, other) => {
+      if (!cf) return null;
+      if (sKey !== 'mean') return cf.seasons[sKey] ? exoSeasonVal(gdView(cf.seasons[sKey]), met.value) : null;
+      return meanOn(commonKeys(F, cf, other), cf, met.value);
+    };
+    const g = h('div', { class: 'grid three' }); view.append(g);
+    const dN = chartDiv('short'), dX = chartDiv('short'), dD = chartDiv('short');
+    const diverg = met.value === 'skill';
+    g.append(card(`Endogena · ${met.label}`, `${cells} celle. — = combinazione non provata.`, dN));
+    g.append(card(`Esogena · ${met.label}`, `${cells} celle.`, dX));
+    g.append(card('Vantaggio dell\'esogena', LOWER_BETTER[met.value] ? 'Endogena − esogena: positivo (blu) = l\'esogena sbaglia meno.' : 'Esogena − endogena: positivo (blu) = l\'esogena è migliore.', dD));
+    gridHeat(dN, ths, tls, (th, tl) => { const [a, b] = pair(th, tl); return valOf(FN, a, b); }, met, diverg, 'confronto_endogena');
+    gridHeat(dX, ths, tls, (th, tl) => { const [a, b] = pair(th, tl); return valOf(FX, b, a); }, met, diverg, 'confronto_esogena');
+    gridHeat(dD, ths, tls, (th, tl) => { const [a, b] = pair(th, tl); return a && b ? advantage(met.value, valOf(FN, a, b), valOf(FX, b, a)) : null; }, met, true, 'confronto_differenza');
+
+    // table of all matched configurations
+    const rows = [];
+    const keys = [...new Set(FN.configs.concat(FX.configs).map(x => `${x.th}|${x.tl}|${x.cells}`))];
+    for (const kk of keys) {
+      const [th, tl, ce] = kk.split('|').map(Number);
+      const a = gdCfg(FN, th, tl, ce), b = gdCfg(FX, th, tl, ce);
+      const ck = commonKeys(FN, a, b);
+      const vn = a && b ? meanOn(ck, a, 'mae') : a ? gdVal(FN, a, 'mae', 'mean') : null;
+      const vx = a && b ? meanOn(ck, b, 'mae') : b ? gdVal(FX, b, 'mae', 'mean') : null;
+      rows.push({ cfg: `TH${th}-TL${tl}-${ce}`, th, tl, cells: ce, n: a && b ? ck.length : null, endo: vn, exo: vx, d: a && b ? vn - vx : null,
+        pers: a && b ? meanOn(ck, a, 'mae', true) : null, skn: a && b ? meanOn(ck, a, 'skill') : null, skx: a && b ? meanOn(ck, b, 'skill') : null,
+        lrn: a ? a.lr : null, lrx: b ? b.lr : null, note: !a ? 'solo esogena' : !b ? 'solo endogena' : '' });
+    }
+    view.append(card('Tutte le combinazioni', 'MAE medio sulle stagioni in comune; "Δ" = MAE endogena − MAE esogena (positivo = l\'esogena sbaglia meno).',
+      table([{ key: 'cfg', label: 'Configurazione' }, { key: 'n', label: 'Stagioni in comune', num: true },
+        { key: 'endo', label: 'MAE endogena [kW]', num: true, fmt: v => fmt(v, 2) }, { key: 'exo', label: 'MAE esogena [kW]', num: true, fmt: v => fmt(v, 2) },
+        { key: 'd', label: 'Δ [kW]', num: true, render: r => signed(r.d, 2, ' kW') }, { key: 'pers', label: 'MAE persistenza', num: true, fmt: v => fmt(v, 2) },
+        { key: 'skn', label: 'Endogena vs persistenza', num: true, render: r => signed(r.skn) }, { key: 'skx', label: 'Esogena vs persistenza', num: true, render: r => signed(r.skx) },
+        { key: 'lrn', label: 'lr endo', num: true }, { key: 'lrx', label: 'lr eso', num: true }, { key: 'note', label: 'Nota' }], rows, { sortKey: 'cfg' })));
+
+    // per-season bars for one matched configuration
+    const matched = FN.configs.filter(a => gdCfg(FX, a.th, a.tl, a.cells));
+    if (matched.length) {
+      const pick = matched.find(x => x.id === S.cmpCfg) || matched[0];
+      const b = gdCfg(FX, pick.th, pick.tl, pick.cells);
+      const ck = commonKeys(FN, pick, b);
+      view.append(sectionTitle('Stagione per stagione'));
+      view.append(filters(selectCtl('Configurazione', matched.map(x => ({ value: x.id, label: x.id })), pick.id, v => set('cmpCfg', v))));
+      const d = chartDiv('');
+      view.append(card(`${met.label} · ${pick.id}`, 'Le due reti e la persistenza sugli stessi campioni di test.', d));
+      const xs = ck.map(seasonLabel);
+      const tr = [
+        { type: 'bar', name: 'Endogena', x: xs, y: ck.map(k => exoSeasonVal(gdView(pick.seasons[k]), met.value)), marker: { color: c.s1 } },
+        { type: 'bar', name: 'Esogena', x: xs, y: ck.map(k => exoSeasonVal(gdView(b.seasons[k]), met.value)), marker: { color: c.s2 } }];
+      if (met.value !== 'skill') tr.push({ type: 'bar', name: `Persistenza (TL ${pick.tl})`, x: xs, y: ck.map(k => exoSeasonVal(gdView(pick.seasons[k]), met.value, true)), marker: { color: c.neutral } });
+      tr.forEach(t => { t.hovertemplate = `${t.name}<br>%{x}: <b>%{y:.${met.d}f} ${met.unit}</b><extra></extra>`; });
+      plot(d, tr, { barmode: 'group', yaxis: { title: { text: met.label }, zeroline: true, zerolinecolor: c.axis } }, 'confronto_per_stagione');
+    }
+
+    // joined years vs single seasons, on the same samples
+    view.append(sectionTitle('Anni uniti contro stagioni separate (stessi campioni dell\'anno 3)'));
+    view.append(h('p', { class: 'note' }, 'Per ogni foglio dell\'anno 3 si confrontano, sull\'ultimo 20 % delle finestre, la rete addestrata solo sul primo 80 % di quel foglio e la rete addestrata sugli anni 1 e 2 della stessa stagione. Stessi TH, TL e celle.'));
+    const jr = [];
+    for (const base of ['endo', 'exo']) {
+      const FS = GD[base], FJ = GD[base + 'J'];
+      for (const j of FJ.configs) {
+        const sp = gdCfg(FS, j.th, j.tl, j.cells);
+        for (const s of FJ.seasons) {
+          const ej = j.seasons[s.key]; if (!ej) continue;
+          const es = sp && sp.seasons[s.key];
+          jr.push({ fam: base === 'endo' ? 'Endogena' : 'Esogena', cfg: j.id, season: s.label, n: ej.n_last20,
+            sep: es ? es.metrics.mae : null, join: ej.m20.mae, d: es ? es.metrics.mae - ej.m20.mae : null, pers: ej.p20.mae,
+            all: ej.metrics.mae, same: es ? es.n_test === ej.n_last20 : null });
+        }
+      }
+    }
+    if (!jr.length) view.append(emptyBox('Le reti con gli anni uniti non hanno ancora risultati salvati.'));
+    else view.append(card('MAE sull\'ultimo 20 % dell\'anno 3', '"Δ" = MAE stagione separata − MAE anni uniti: positivo = gli anni uniti sbagliano meno. "Tutto l\'anno 3" = MAE della rete ad anni uniti su tutto il foglio.',
+      table([{ key: 'fam', label: 'Rete' }, { key: 'cfg', label: 'Configurazione' }, { key: 'season', label: 'Foglio' }, { key: 'n', label: 'Campioni', num: true },
+        { key: 'sep', label: 'MAE stagione separata', num: true, fmt: v => fmt(v, 2) }, { key: 'join', label: 'MAE anni uniti', num: true, fmt: v => fmt(v, 2) },
+        { key: 'd', label: 'Δ [kW]', num: true, render: r => signed(r.d, 2, ' kW') }, { key: 'pers', label: 'MAE persistenza', num: true, fmt: v => fmt(v, 2) },
+        { key: 'all', label: 'Anni uniti, tutto l\'anno 3', num: true, fmt: v => fmt(v, 2) },
+        { key: 'same', label: 'Stessi campioni', render: r => r.same == null ? '—' : r.same ? 'sì' : 'no' }], jr, { scroll: true })));
   }
 
   // ================================================================== VIEW: explorer (whole test sets)
@@ -950,7 +1150,7 @@
   function viewExplorer() {
     const c = C();
     const isAbr = S.expModel === 'abr';
-    const cfgList = isAbr ? ABR.configs : EXO.configs;
+    const cfgList = isAbr ? ABR.configs : gdAll();
     const seasons = isAbr ? ABR_SEASONS : EXO_SEASONS;
     const seasonKey = isAbr ? S.expSeasonAbr : S.expSeasonExo;
     const selKey = isAbr ? 'expCfgsAbr' : 'expCfgsExo', slotKey = isAbr ? 'expSlotsAbr' : 'expSlotsExo';
@@ -979,16 +1179,17 @@
           else if (sel.length >= 4) { alertBox.hidden = false; return; }
           else arr.push(cf.id);
           save(); render(true);
-        } }, sw, cf.id + (cf.preferred ? ' ★' : '')));
+        } }, sw, (cf.label || cf.id) + (cf.preferred ? ' ★' : '')));
     }
     view.append(filters(
-      segCtl('Modello', [{ value: 'abr', label: 'LSTM endogena (Abruzzo)' }, { value: 'exo', label: 'LSTM esogena' }], S.expModel, v => set('expModel', v)),
+      segCtl('Modello', [{ value: 'abr', label: 'LSTM endogena (Abruzzo)' }, { value: 'exo', label: 'Generation data (tutte le reti)' }], S.expModel, v => set('expModel', v)),
       selectCtl('Stagione', seasons.map(s => ({ value: s.key, label: s.label })), seasonKey, v => set(isAbr ? 'expSeasonAbr' : 'expSeasonExo', v)),
-      checkCtl('Persistenza', S.expPers, v => set('expPers', v)),
+      checkCtl(isAbr ? 'Misura traslata di 1 h' : 'Misura traslata di 1 passo', S.expPers, v => set('expPers', v)),
       isAbr ? checkCtl('Stessa ora di ieri', S.expYest, v => set('expYest', v)) : null,
       checkCtl('Pannello dell\'errore', S.expErr, v => set('expErr', v)),
       !isAbr ? segCtl('Asse orizzontale', [{ value: 'samples', label: 'Riga del foglio' }, { value: 'minutes', label: 'Minuti (stima 5 min)' }], S.expUnit, v => set('expUnit', v)) : null,
-      h('div', { class: 'ctl', style: 'flex-basis:100%' }, h('span', null, 'Configurazioni (★ = preferita; disattivate quelle senza previsioni salvate per questa stagione)'), chips, alertBox),
+      h('div', { class: 'ctl', style: 'flex-basis:100%' }, h('span', null, isAbr ? 'Configurazioni (★ = preferita; disattivate quelle senza previsioni salvate per questa stagione)'
+        : 'Configurazioni (ESO = esogena, END = endogena; "anni" = addestrata sugli anni 1 + 2, esiste solo sui fogli dell\'anno 3; ★ = preferita)'), chips, alertBox),
     ));
     if (!sel.length) {
       view.append(emptyBox(isAbr && !ABR.configs.some(abrHasCsv)
@@ -1011,19 +1212,18 @@
     const err = S.expErr;
     const traces = [lineT(xOf(base), base.real, 'Misurata', c.text1, { line: { color: c.text1, width: 2 }, hovertemplate: `<b>%{y:.1f} ${unitY}</b> misurata<extra></extra>` })];
     const tls = [...new Set(cfgs.map(cf => cf.tl))];
-    if (S.expPers) tls.forEach((tl, k) => {
-      const i = cfgs.findIndex(cf => cf.tl === tl);
-      traces.push(lineT(xOf(sers[i]), sers[i].pers, `Persistenza (TL ${tl}${isAbr ? ' h' : ' passi'})`, c.neutral,
-        { line: { color: c.neutral, width: 1.5, dash: k ? 'dot' : 'solid' }, hovertemplate: `<b>%{y:.1f} ${unitY}</b> persistenza TL ${tl}<extra></extra>` }));
-    });
+    const tlsRef = isAbr ? tls.filter(t => t <= ABR_PERS_MAX_TL) : tls;     // persistence used as a reference in the table
+    const nm = cf => cf.label || cf.id;
+    if (S.expPers) traces.push(lineT(xOf(base), base.shift1, isAbr ? 'Misura traslata di 1 h' : 'Misura traslata di 1 passo (5 min)', c.neutral,
+      { line: { color: c.neutral, width: 1.5 }, hovertemplate: `<b>%{y:.1f} ${unitY}</b> misura 1 passo prima<extra></extra>` }));
     if (isAbr && S.expYest) traces.push(lineT(xOf(base), base.yest, 'Stessa ora di ieri', c.muted,
       { line: { color: c.muted, width: 1.5, dash: 'dot' }, hovertemplate: '<b>%{y:.1f} kWh</b> ieri<extra></extra>' }));
-    cfgs.forEach((cf, i) => traces.push(lineT(xOf(sers[i]), sers[i].pred, cf.id, slotCols[S[slotKey][cf.id]],
-      { hovertemplate: `<b>%{y:.1f} ${unitY}</b> ${cf.id}<extra></extra>` })));
+    cfgs.forEach((cf, i) => traces.push(lineT(xOf(sers[i]), sers[i].pred, nm(cf), slotCols[S[slotKey][cf.id]],
+      { hovertemplate: `<b>%{y:.1f} ${unitY}</b> ${nm(cf)}<extra></extra>` })));
     if (err) cfgs.forEach((cf, i) => traces.push(lineT(xOf(sers[i]),
       sers[i].pred.map((p, j) => p == null || sers[i].real[j] == null ? null : p - sers[i].real[j]),
-      'Errore ' + cf.id, slotCols[S[slotKey][cf.id]], { yaxis: 'y2', showlegend: false, line: { color: slotCols[S[slotKey][cf.id]], width: 1.5 },
-        hovertemplate: `errore <b>%{y:+.1f} ${unitY}</b> ${cf.id}<extra></extra>` })));
+      'Errore ' + nm(cf), slotCols[S[slotKey][cf.id]], { yaxis: 'y2', showlegend: false, line: { color: slotCols[S[slotKey][cf.id]], width: 1.5 },
+        hovertemplate: `errore <b>%{y:+.1f} ${unitY}</b> ${nm(cf)}<extra></extra>` })));
 
     // --- default window
     const allX = xNum(base), xmin = allX[0], xmax = allX[allX.length - 1];
@@ -1108,8 +1308,9 @@
     }
     function renderStats() {
       const rows = [];
-      cfgs.forEach((cf, i) => rows.push(Object.assign({ name: cf.id, col: slotCols[S[slotKey][cf.id]], _hl: cf.preferred }, stats(xs[i], sers[i].real, sers[i].pred))));
-      tls.forEach(tl => { const i = cfgs.findIndex(cf => cf.tl === tl); rows.push(Object.assign({ name: `Persistenza (TL ${tl})`, col: c.neutral }, stats(xs[i], sers[i].real, sers[i].pers))); });
+      cfgs.forEach((cf, i) => rows.push(Object.assign({ name: nm(cf), col: slotCols[S[slotKey][cf.id]], _hl: cf.preferred }, stats(xs[i], sers[i].real, sers[i].pred))));
+      tlsRef.forEach(tl => { const i = cfgs.findIndex(cf => cf.tl === tl); rows.push(Object.assign({ name: `Persistenza (ultimo valore noto, TL ${tl})`, col: c.neutral }, stats(xs[i], sers[i].real, sers[i].pers))); });
+      rows.push(Object.assign({ name: isAbr ? 'Misura traslata di 1 h (solo riferimento visivo)' : 'Misura traslata di 1 passo (solo riferimento visivo)', col: c.neutral }, stats(xs[ei], base.real, base.shift1)));
       if (isAbr) rows.push(Object.assign({ name: 'Stessa ora di ieri', col: c.muted }, stats(xs[ei], base.real, base.yest)));
       const span = isAbr ? `${strOf(expRange[0])} → ${strOf(expRange[1])}`
         : `${fmt(expRange[0], 0)} → ${fmt(expRange[1], 0)} ${S.expUnit === 'minutes' ? 'min' : '(righe del foglio)'}`;
@@ -1128,8 +1329,8 @@
     function downloadWindow() {
       const head = [isAbr ? 'Timestamp' : (S.expUnit === 'minutes' ? 'Minuti' : 'RigaFoglio'), 'Misurata'];
       const toMap = (xArr, vals) => { const m = new Map(); xArr.forEach((x, j) => m.set(x, vals[j])); return m; };
-      const maps = cfgs.map((cf, i) => { head.push(cf.id); return toMap(xs[i], sers[i].pred); });
-      const pmaps = tls.map(tl => { head.push(`Persistenza_TL${tl}`); const i = cfgs.findIndex(cf => cf.tl === tl); return toMap(xs[i], sers[i].pers); });
+      const maps = cfgs.map((cf, i) => { head.push(nm(cf)); return toMap(xs[i], sers[i].pred); });
+      const pmaps = tlsRef.map(tl => { head.push(`Persistenza_TL${tl}`); const i = cfgs.findIndex(cf => cf.tl === tl); return toMap(xs[i], sers[i].pers); });
       if (isAbr) head.push('StessaOraIeri');
       const lines = [head.join(';')];
       const bx = xs[ei], bxLabel = xOf(base);
@@ -1175,6 +1376,11 @@
     for (const c2 of EXO.configs) if (c2.arch) nets.push({ group: 'exo', id: c2.id, label: c2.id + (c2.preferred ? ' (preferita)' : ''), kind: 'lstm', arch: c2.arch,
       inputs: c2.arch.inputs, th: c2.th, tl: c2.tl, unit: 'passi', stepName: 'un passo ≈ 5 minuti, stima', target: `Potenza AC al passo t + ${c2.tl} [kW]`,
       split: `${Math.round((c2.frac || 0.8) * 100)} / ${100 - Math.round((c2.frac || 0.8) * 100)} % cronologica (addestramento / test), un modello per stagione`,
+      script: c2.script, seed: "rng('default') prima di ogni stagione" });
+    for (const fk of ['endo', 'exoJ', 'endoJ']) for (const c2 of GD[fk].configs) if (c2.arch) nets.push({ group: fk, id: c2.id, label: c2.id, kind: 'lstm', arch: c2.arch,
+      inputs: c2.arch.inputs, th: c2.th, tl: c2.tl, unit: 'passi', stepName: 'un passo ≈ 5 minuti, stima', target: `Potenza AC al passo t + ${c2.tl} [kW]`,
+      split: GD[fk].joined ? 'addestramento sugli anni 1 + 2 della stagione, test su tutto il foglio dell\'anno 3 (normalizzazione sui soli dati di addestramento)'
+        : `${Math.round((c2.frac || 0.8) * 100)} / ${100 - Math.round((c2.frac || 0.8) * 100)} % cronologica (addestramento / test), un modello per stagione`,
       script: c2.script, seed: "rng('default') prima di ogni stagione" });
     return nets;
   }
@@ -1352,7 +1558,8 @@
     view.append(h('div', { class: 'view-head' }, h('h2', null, 'Architetture delle reti'),
       h('p', null, 'Per ogni rete: i livelli nell\'ordine in cui sono definiti nello script MATLAB, con dimensioni e parametri addestrabili, uno schema intuitivo del funzionamento e le impostazioni di addestramento. Tutto è letto direttamente dagli script.')));
     if (!nets.length) { view.append(emptyBox('Nessuna architettura trovata negli script.')); return; }
-    const groups = [{ value: 'reg', label: 'Regressione' }, { value: 'abr', label: 'LSTM endogena (Abruzzo)' }, { value: 'exo', label: 'LSTM esogena' }].filter(gp => nets.some(n => n.group === gp.value));
+    const groups = [{ value: 'reg', label: 'Regressione' }, { value: 'abr', label: 'LSTM endogena (Abruzzo)' }, { value: 'exo', label: 'LSTM esogena' },
+      { value: 'endo', label: 'LSTM endogena (GD)' }, { value: 'exoJ', label: 'Esogena · anni uniti' }, { value: 'endoJ', label: 'Endogena (GD) · anni uniti' }].filter(gp => nets.some(n => n.group === gp.value));
     if (!groups.some(gp => gp.value === S.archGroup)) S.archGroup = groups[0].value;
     const inGroup = nets.filter(n => n.group === S.archGroup);
     const key = 'arch_' + S.archGroup;
@@ -1379,7 +1586,7 @@
     }
 
     // comparison of all networks
-    const rows = nets.map(n => ({ part: { reg: 'Regressione', abr: 'LSTM endogena', exo: 'LSTM esogena' }[n.group], name: n.label,
+    const rows = nets.map(n => ({ part: { reg: 'Regressione', abr: 'LSTM endogena (Abruzzo)', exo: 'LSTM esogena', endo: GD_PART.endo, exoJ: GD_PART.exoJ, endoJ: GD_PART.endoJ }[n.group], name: n.label,
       inp: n.kind === 'ff' ? `${n.inputs.length} variabili (stesso istante)` : `${n.th} ${n.unit} × ${n.arch.layers[0].size} ${plural(n.arch.layers[0].size, 'canale', 'canali')}`,
       struct: n.arch.layers.filter(l => ['lstmLayer', 'fullyConnectedLayer'].includes(l.type)).map(l => (l.type === 'lstmLayer' ? 'LSTM ' : 'FC ') + l.size).join(' → '),
       params: n.arch.params, loss: (n.arch.loss || '').toUpperCase(), _hl: n.id === net.id && n.group === net.group }));
@@ -1392,7 +1599,8 @@
   function viewGallery() {
     view.append(h('div', { class: 'view-head' }, h('h2', null, 'Grafici originali'),
       h('p', null, 'Le immagini salvate dagli script MATLAB, così come sono (tema scuro, etichette in italiano). Clicca per aprirle ingrandite. Le prove scartate durante il lavoro non sono mostrate.')));
-    const parts = [{ value: 'all', label: 'Tutte le parti' }, { value: 'regressione', label: 'Regressione' }, { value: 'abruzzo', label: 'LSTM endogena (Abruzzo)' }, { value: 'esogena', label: 'LSTM esogena' }];
+    const parts = [{ value: 'all', label: 'Tutte le parti' }, { value: 'regressione', label: 'Regressione' }, { value: 'abruzzo', label: 'LSTM endogena (Abruzzo)' }, { value: 'esogena', label: 'LSTM esogena' },
+      { value: 'endogena_gd', label: 'LSTM endogena (Generation data)' }, { value: 'esogena_anni', label: 'Esogena · anni uniti' }, { value: 'endogena_anni', label: 'Endogena (GD) · anni uniti' }];
     const items = D.gallery.filter(g => S.galPart === 'all' || g.part === S.galPart);
     const groups = [...new Set(items.map(g => g.group))];
     if (S.galGroup !== 'all' && !groups.includes(S.galGroup)) S.galGroup = 'all';
@@ -1427,10 +1635,18 @@
         h('dt', null, 'nMAE'), h('dd', null, 'MAE diviso una potenza di riferimento, in %: la potenza nominale (995,67 kWp per l\'Abruzzo), la potenza massima misurata (Generation_data, nominale non nota) oppure la potenza media misurata nel test. Spiegazione completa nella Panoramica.'),
         h('dt', null, 'MAPE diurno'), h('dd', null, 'Errore percentuale medio solo sui campioni "diurni": misura > 10 kWh nell\'Abruzzo, > 5 % del massimo della stagione nell\'esogena (come negli script).'),
         h('dt', null, 'wMAPE diurno'), h('dd', null, 'Somma degli errori assoluti diviso somma delle misure, sugli stessi campioni diurni: meno sensibile ai valori piccoli.'),
-        h('dt', null, 'Persistenza'), h('dd', null, 'Previsione ingenua "il valore resta quello dell\'ultimo istante noto": la misura di TL passi prima.'),
-        h('dt', null, 'Stessa ora di ieri'), h('dd', null, 'Previsione ingenua con la misura di 24 ore prima (solo Abruzzo, dati orari).'),
+        h('dt', null, 'Persistenza'), h('dd', null, 'Previsione ingenua "il valore resta quello dell\'ultimo istante noto": la misura di TL passi prima, cioè l\'ultimo dato disponibile quando la rete fa la previsione. Nell\'Abruzzo è usata solo per TL ≤ ' + ABR_PERS_MAX_TL + ' h (vedi sotto).'),
+        h('dt', null, 'Stessa ora di ieri'), h('dd', null, 'Previsione ingenua con la misura di 24 ore prima (solo Abruzzo, dati orari). È il riferimento principale dell\'Abruzzo per ogni TL.'),
+        h('dt', null, 'Misura traslata di 1 passo'), h('dd', null, 'La misura spostata in avanti di un passo (1 ora nell\'Abruzzo, 5 minuti su Generation data), disegnata nei grafici come riferimento visivo. Con TL > 1 non è una previsione realizzabile, perché quel valore non è ancora noto quando si fa la previsione: per questo non entra nelle tabelle di miglioramento.'),
         h('dt', null, 'Miglioramento'), h('dd', null, '1 − MAE rete / MAE riferimento, in %. Positivo = la rete è migliore.'),
         h('dt', null, 'Analisi del ritardo'), h('dd', null, 'MAE tra la previsione al tempo t e la misura al tempo t − k, per vari k. Il minimo a k = 0 indica una previsione in fase; il minimo a k = TL indica che la rete ripete l\'ultimo valore noto.'),
+      ))));
+    view.append(card('Quale riferimento ingenuo, e perché', null, h('div', { class: 'prose' },
+      h('p', null, 'La persistenza classica (misura di TL passi prima) è un buon riferimento solo se TL è breve rispetto al ciclo giornaliero. Nell\'Abruzzo, con dati orari e TL = 12 h, la "previsione" per mezzogiorno è il valore di mezzanotte e quella per mezzanotte è il picco di mezzogiorno: i picchi finiscono di notte, l\'errore della persistenza diventa enorme e la rete sembra migliore di quanto sia.'),
+      h('ul', null,
+        h('li', null, h('b', null, 'Abruzzo. '), `Il riferimento principale, per tutti i TL, è la stessa ora del giorno prima (t − 24 h): rispetta il ciclo giornaliero ed è disponibile quando si fa la previsione (TL ≤ 24 h). Nei dati è già migliore della persistenza classica anche a TL = 1 h. La persistenza classica è riportata solo per TL ≤ ${ABR_PERS_MAX_TL} h.`),
+        h('li', null, h('b', null, 'Generation data. '), 'TL arriva al massimo a 6 passi (circa 30 minuti) e i fogli contengono solo ore di luce, quindi il problema non si presenta: resta la persistenza classica. L\'unico effetto residuo è al passaggio da un giorno al successivo (la sera seguita dalla mattina dopo), dove per i primi TL campioni la persistenza usa il valore della sera prima.'),
+        h('li', null, h('b', null, 'Nei grafici '), 'si può mostrare la misura traslata di 1 passo: aiuta a vedere se la previsione è in ritardo, ma non è un riferimento per le tabelle.'),
       ))));
     view.append(card('Dati e cautele', null, h('div', { class: 'prose' }, h('ul', null,
       h('li', null, 'Regressione: divisione train/test casuale senza seed, quindi ogni run dà numeri leggermente diversi. Il run usato nella tesi è ' + REG.used_run + '.'),
@@ -1444,7 +1660,9 @@
       REG.runs.map(r => h('li', null, h('code', null, r.source), r.scatter_source ? [' · punti: ', h('code', null, r.scatter_source)] : null)),
       h('li', null, h('code', null, ABR.metrics_source), ' e ', h('code', null, 'Monomega abruzzo/Grafici_*/Risultati_*.csv')),
       h('li', null, h('code', null, 'Monomega abruzzo/Abruzzo_diviso_in_stagioni.xlsx'), ' (serie misurate, riferimenti ingenui)'),
-      h('li', null, h('code', null, 'LSTM_ESOGENA/Grafici_*/Risultati_*.csv'), ' e ', h('code', null, 'LSTM_ESOGENA/Generation_data_stagioni_vento_corretto.xlsx')),
+      h('li', null, h('code', null, 'Generation data/LSTM_ESOGENA/Reti_stagioni_separate/Grafici_*/Risultati_*.csv'), ' e ', h('code', null, 'Generation data/LSTM_ENDOGENA/Reti_con_stagioni_separate/Grafici_*/Risultati_*.csv')),
+      h('li', null, h('code', null, 'Generation data/LSTM_ESOGENA/Reti_stagioni_unite/Grafici_ANNI_*/Risultati_*.csv'), ' e ', h('code', null, 'Generation data/LSTM_ENDOGENA/Reti_con_stagioni_unite/Grafici_ANNI_*/Risultati_*.csv')),
+      h('li', null, h('code', null, 'Generation data/Generation_data_stagioni_vento_corretto.xlsx'), ' (serie misurate, persistenza)'),
       h('li', null, 'File FV_*.hdf5 / FV_*.dict per gli stati LSTMVis.'),
     ))));
   }
