@@ -2,9 +2,9 @@
 
 Dashboard interattiva con i risultati dei modelli sviluppati per la tesi triennale, organizzata per dataset:
 
-- **Generation data** — confronto tra i modelli (regressione, LSTM esogena, LSTM endogena), una pagina per ogni
+- **Generation data**: confronto tra i modelli (regressione, LSTM esogena, LSTM endogena), una pagina per ogni
   modello, esploratore del periodo di test, architetture e grafici originali.
-- **Monomega Abruzzo** — confronto tra le configurazioni LSTM endogene (finestra, orizzonte, celle), dettaglio di
+- **Monomega Abruzzo**: confronto tra le configurazioni LSTM endogene (finestra, orizzonte, celle), dettaglio di
   una configurazione, esploratore del test, architetture e grafici originali.
 
 Apri la dashboard: **https://marcodezan.github.io/Tesi-triennale/**
