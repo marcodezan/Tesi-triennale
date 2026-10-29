@@ -529,17 +529,25 @@
       h('img', { src: png.thumb, alt: title, loading: 'lazy' }), h('span', { class: 't1' }, title), sub ? h('span', { class: 't2' }, sub) : null);
   }
 
-  // ------------------------------------------------------------------ texts edited on the page ("Modifica testi")
+  // ------------------------------------------------------------------ texts edited on the page ("Modifica i testi")
   // Every text of the page can be replaced from testi.js: window.TESTI = { "original text": "new text" }.
   // The original text is the key, so a sentence that contains a computed number stops being replaced when the
   // number changes: the page never shows an edited text with an old number.
+  // testi.js lives in the public GitHub repository: the page saves it there with the owner's GitHub token
+  // (kept only in the browser of the owner's devices). The local build copies it back into Elaborato/dashboard.
+  const GH = { owner: 'marcodezan', repo: 'Tesi-triennale', path: 'testi.js', branch: 'main',
+    author: { name: 'Marco De Zan', email: '119526606+marcodezan@users.noreply.github.com' } };
   const EDIT_SEL = ['.view-head h2', '.view-head p', '.section-title', '.section-lead', '.card-head h3', '.card-head .desc',
     '.fold-title', 'details.fold > summary .desc', '.callout > div', 'p.note', '.prose p', '.prose li', '.prose dt', '.prose dd',
     '.tile .label', '.tile .who', 'ul.bullets li', '.chip-group-label', '.empty > div'].join(', ');
-  const SAVED_TX = () => (window.TESTI && typeof window.TESTI === 'object') ? window.TESTI : {};
+  const FILE_TX = (window.TESTI && typeof window.TESTI === 'object') ? window.TESTI : {};
   const draft = store.get('testi_bozza', null);
-  let TX = Object.assign({}, draft && draft.tx ? draft.tx : SAVED_TX());
-  let editing = false, fileHandle = null;
+  // just after a save the site can still serve the previous testi.js for a few minutes: keep showing what was saved
+  const recent = draft && draft.pub && Date.now() - draft.pub < 15 * 60e3;
+  let BASE = Object.assign({}, recent ? draft.base : FILE_TX);
+  let TX = Object.assign({}, draft && draft.tx ? draft.tx : BASE);
+  let editing = false;
+  function ghToken() { return store.get('gh_token', null); }
   function applyTexts(root) {
     for (const el of root.querySelectorAll(EDIT_SEL)) {
       if (el.closest('.table-wrap, .js-plotly-plot')) continue;
@@ -562,17 +570,14 @@
       sp.spellcheck = true;
     }
   }
-  function unsaved() {
-    const a = TX, b = SAVED_TX();
-    return [...new Set(Object.keys(a).concat(Object.keys(b)))].filter(k => a[k] !== b[k]).length;
-  }
+  function changedKeys() { return [...new Set(Object.keys(TX).concat(Object.keys(BASE)))].filter(k => TX[k] !== BASE[k]); }
+  function keepDraft(pub) { store.set('testi_bozza', changedKeys().length || pub ? { tx: TX, base: BASE, pub: pub || (draft && recent ? draft.pub : 0) } : null); }
   function commitText(sp) {
     const k = sp.dataset.k, lead = k.match(/^\s*/)[0], trail = k.match(/\s*$/)[0];
     const v = sp.textContent.replace(/\s+/g, ' ').trim();
     if (!v || lead + v + trail === k) { delete TX[k]; sp.textContent = k; sp.classList.remove('changed'); }
     else { TX[k] = lead + v + trail; if (sp.textContent !== TX[k]) sp.textContent = TX[k]; sp.classList.add('changed'); }
-    store.set('testi_bozza', unsaved() ? { tx: TX } : null);
-    updateEditBar();
+    keepDraft(); updateEditBar();
   }
   view.addEventListener('focusout', e => { if (editing && e.target.classList && e.target.classList.contains('edt')) commitText(e.target); });
   view.addEventListener('keydown', e => {
@@ -583,63 +588,119 @@
   // a text inside the title of a folded card: clicking it edits it instead of opening the card
   view.addEventListener('click', e => { if (editing && e.target.closest && e.target.closest('summary .edt')) e.preventDefault(); });
 
+  // --- controls: topbar button (devices with a token), footer link, edit bar, token dialog
   const editBar = h('div', { class: 'editbar', hidden: true, role: 'region', 'aria-label': 'Modifica dei testi' });
-  document.body.append(editBar);
   const editBtn = h('button', { type: 'button', class: 'ghost-btn', onclick: () => toggleEditing() }, 'Modifica testi');
-  if (!D.public) document.querySelector('.topbar-actions').prepend(editBtn);
-  function editMsg(text) { const m = editBar.querySelector('.eb-msg'); if (m) m.textContent = text; }
+  const footLink = h('button', { type: 'button', class: 'link-btn foot-link', onclick: () => toggleEditing() }, 'Modifica i testi');
+  document.body.append(h('footer', { class: 'site-foot' }, h('span', null, 'Dashboard dei risultati della tesi'), footLink), editBar);
+  document.querySelector('.topbar-actions').prepend(editBtn);
+  function editMsg(text, bad) { const m = editBar.querySelector('.eb-msg'); if (m) { m.textContent = text; m.classList.toggle('bad', !!bad); } }
   function updateEditBar() {
-    const n = unsaved();
+    const n = changedKeys().length;
+    editBtn.hidden = !ghToken() && !editing;
     editBtn.textContent = editing ? 'Fine modifica' : 'Modifica testi' + (n ? ' •' : '');
     editBtn.setAttribute('aria-pressed', String(editing));
     editBar.hidden = !editing;
     if (!editing) return;
     editBar.textContent = '';
     editBar.append(
-      h('div', { class: 'eb-text' }, h('b', null, 'Modifica dei testi. '), 'Clicca su un titolo o una frase e scrivi; Invio conferma, Esc annulla. Lascia vuoto per tornare al testo originale. I numeri dei grafici e delle tabelle non si modificano.'),
+      h('div', { class: 'eb-text' }, h('b', null, 'Modifica dei testi. '), 'Tocca un titolo o una frase e scrivi; Invio conferma, Esc annulla. Lascia vuoto per tornare al testo originale. I numeri dei grafici e delle tabelle non si modificano.'),
       h('div', { class: 'eb-actions' },
         h('span', { class: 'eb-count' }, n ? `${n} ${n === 1 ? 'modifica da salvare' : 'modifiche da salvare'}` : 'Nessuna modifica da salvare'),
-        h('button', { type: 'button', class: 'primary-btn no-arrow', disabled: !n, onclick: () => saveTexts() }, 'Salva'),
+        h('button', { type: 'button', class: 'primary-btn no-arrow', disabled: !n, onclick: e => saveTexts(e.currentTarget) }, 'Salva sul sito'),
         h('button', { type: 'button', class: 'ghost-btn', disabled: !n, onclick: () => discardTexts() }, 'Annulla le modifiche'),
-        h('button', { type: 'button', class: 'ghost-btn', onclick: () => toggleEditing() }, 'Fine')),
+        h('button', { type: 'button', class: 'ghost-btn', onclick: () => toggleEditing() }, 'Fine'),
+        h('button', { type: 'button', class: 'link-btn eb-logout', onclick: () => forgetToken() }, 'Esci da questo dispositivo')),
       h('div', { class: 'eb-msg note', 'aria-live': 'polite' }));
   }
   function toggleEditing() {
+    if (!editing && !ghToken()) { openTokenDialog(); return; }
     if (editing && document.activeElement && document.activeElement.classList.contains('edt')) document.activeElement.blur();
     editing = !editing;
     document.body.classList.toggle('editing', editing);
     setEditable(view, editing);
     updateEditBar();
   }
-  function textsFile() {
-    const keys = Object.keys(TX).sort((a, b) => a.localeCompare(b, 'it'));
-    const obj = {}; for (const k of keys) obj[k] = TX[k];
-    return '// Testi della dashboard cambiati con il pulsante "Modifica testi".\n' +
+  function forgetToken() {
+    store.set('gh_token', null);
+    if (editing) toggleEditing(); else updateEditBar();
+  }
+  function ghHeaders(token) { return { Authorization: 'Bearer ' + token, Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28' }; }
+  const fileUrl = () => `https://api.github.com/repos/${GH.owner}/${GH.repo}/contents/${GH.path}`;
+  async function readRemote(token) {
+    const r = await fetch(fileUrl() + '?ref=' + GH.branch + '&t=' + Date.now(), { headers: ghHeaders(token), cache: 'no-store' });
+    if (r.status === 404) return { sha: null, tx: {} };
+    if (!r.ok) throw new Error(r.status === 401 ? 'token non valido o scaduto' : r.status === 403 ? 'il token non ha accesso a questo repository' : 'GitHub ha risposto ' + r.status);
+    const j = await r.json();
+    const text = new TextDecoder().decode(Uint8Array.from(atob(j.content.replace(/\s/g, '')), ch => ch.charCodeAt(0)));
+    let tx = {};
+    const i = text.indexOf('window.TESTI');
+    if (i >= 0) { const body = text.slice(text.indexOf('=', i) + 1).trim().replace(/;\s*$/, ''); try { tx = JSON.parse(body); } catch (e) { throw new Error('il file testi.js su GitHub non è leggibile'); } }
+    return { sha: j.sha, tx };
+  }
+  function openTokenDialog() {
+    const input = h('input', { type: 'password', class: 'in token-in', autocomplete: 'off', spellcheck: 'false', placeholder: 'github_pat_…', 'aria-label': 'Token di GitHub' });
+    const msg = h('p', { class: 'note', 'aria-live': 'polite' });
+    const close = () => dlg.remove();
+    const go = async () => {
+      const t = input.value.trim();
+      if (!t) { msg.textContent = 'Incolla il token.'; return; }
+      msg.textContent = 'Controllo il token…';
+      try {
+        await readRemote(t);
+        store.set('gh_token', t); close();
+        toggleEditing();
+      } catch (e) { msg.textContent = 'Non funziona: ' + e.message + '.'; }
+    };
+    input.addEventListener('keydown', e => { if (e.key === 'Enter') go(); if (e.key === 'Escape') close(); });
+    const dlg = h('div', { class: 'lightbox', onclick: e => { if (e.target === dlg) close(); } },
+      h('div', { class: 'lightbox-inner token-box', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Accesso per modificare i testi' },
+        h('p', { class: 'lightbox-title' }, 'Modifica i testi'),
+        h('p', { class: 'note', style: 'margin:0' }, `Incolla il token di GitHub creato per il repository ${GH.owner}/${GH.repo}. Resta solo in questo browser: la prossima volta non servirà reinserirlo.`),
+        input, msg,
+        h('div', { class: 'lightbox-actions' }, h('button', { type: 'button', class: 'primary-btn no-arrow', onclick: go }, 'Entra'),
+          h('button', { type: 'button', class: 'ghost-btn', onclick: close }, 'Annulla'))));
+    document.body.append(dlg); input.focus();
+  }
+  function textsFile(obj) {
+    const out = {}; for (const k of Object.keys(obj).sort((a, b) => a.localeCompare(b, 'it'))) out[k] = obj[k];
+    return '// Testi della dashboard cambiati con "Modifica i testi" (sul sito o nella copia locale).\n' +
       '// Ogni voce: "testo originale": "testo nuovo". Se il testo originale cambia (per esempio perché cambia un numero\n' +
       '// calcolato), la voce smette di applicarsi e la pagina mostra di nuovo il testo originale.\n' +
-      'window.TESTI = ' + JSON.stringify(obj, null, 2) + ';\n';
+      'window.TESTI = ' + JSON.stringify(out, null, 2) + ';\n';
   }
-  function savedOk(text) { window.TESTI = Object.assign({}, TX); store.set('testi_bozza', null); updateEditBar(); editMsg(text); }
-  async function saveTexts() {
-    const body = textsFile();
-    if (window.showSaveFilePicker) {
-      try {
-        if (!fileHandle) fileHandle = await window.showSaveFilePicker({ suggestedName: 'testi.js',
-          types: [{ description: 'Testi della dashboard', accept: { 'text/javascript': ['.js'] } }] });
-        const w = await fileHandle.createWritable(); await w.write(body); await w.close();
-        savedOk(`Salvato in ${fileHandle.name}. Se non l'hai già fatto, il file giusto è testi.js nella cartella della dashboard (Elaborato/dashboard).`);
+  async function saveTexts(btn) {
+    const token = ghToken(); if (!token) { openTokenDialog(); return; }
+    if (btn) btn.disabled = true;
+    editMsg('Salvataggio su GitHub…');
+    try {
+      for (let attempt = 0; attempt < 2; attempt++) {
+        // start from the file on GitHub (it may have been changed from another device) and apply only my changes
+        const remote = await readRemote(token);
+        const merged = Object.assign({}, remote.tx);
+        for (const k of changedKeys()) { if (TX[k] == null) delete merged[k]; else merged[k] = TX[k]; }
+        const n = changedKeys().length;
+        const bytes = new TextEncoder().encode(textsFile(merged));
+        let bin = ''; bytes.forEach(b => { bin += String.fromCharCode(b); });
+        const body = { message: `Testi della dashboard: ${n} ${n === 1 ? 'modifica' : 'modifiche'} dal sito`, content: btoa(bin), branch: GH.branch,
+          author: GH.author, committer: GH.author };
+        if (remote.sha) body.sha = remote.sha;
+        const r = await fetch(fileUrl(), { method: 'PUT', headers: Object.assign({ 'Content-Type': 'application/json' }, ghHeaders(token)), body: JSON.stringify(body) });
+        if (r.status === 409 || r.status === 422) continue;            // changed meanwhile: read it again and retry once
+        if (!r.ok) throw new Error(r.status === 401 ? 'token non valido o scaduto' : r.status === 403 ? 'il token non può scrivere in questo repository (serve "Contents: Read and write")' : 'GitHub ha risposto ' + r.status);
+        BASE = Object.assign({}, merged); TX = Object.assign({}, merged); window.TESTI = merged;
+        keepDraft(Date.now()); updateEditBar();
+        editMsg('Salvato su GitHub. Il sito pubblico si aggiorna in circa un minuto; su questo dispositivo le modifiche si vedono già.');
         return;
-      } catch (e) {
-        if (e && e.name === 'AbortError') return;
-        fileHandle = null;
       }
+      throw new Error('il file è stato cambiato nello stesso momento da un altro dispositivo; riprova');
+    } catch (e) {
+      editMsg('Non salvato: ' + e.message + '. Le modifiche restano su questo dispositivo finché non le salvi o le annulli.', true);
+      if (btn) btn.disabled = false;
     }
-    const a = h('a', { href: URL.createObjectURL(new Blob([body], { type: 'text/javascript;charset=utf-8' })), download: 'testi.js' });
-    document.body.append(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 500);
-    savedOk('Scaricato testi.js: spostalo nella cartella Elaborato/dashboard al posto di quello vecchio.');
   }
   function discardTexts() {
-    TX = Object.assign({}, SAVED_TX()); store.set('testi_bozza', null);
+    TX = Object.assign({}, BASE); keepDraft();
     render(true); editMsg('Modifiche annullate: la pagina mostra di nuovo i testi salvati.');
   }
 
@@ -1998,7 +2059,7 @@
     if (!D.public) view.append(card('Come aggiornare', null, h('div', { class: 'prose' },
       h('p', null, 'Quando rilanci uno script o aggiungi risultati, fai doppio clic su ', h('code', null, 'aggiorna_dashboard.bat'), ' (in questa cartella) e ricarica la pagina. Lo script ', h('code', null, 'Elaborato/scripts/build_dashboard.py'), ' rilegge tutti i file dei modelli, ricalcola le metriche e riscrive ', h('code', null, 'data.js'), '. Non modifica nulla nelle cartelle dei modelli.'),
       h('p', null, 'Nuovi run della regressione (cartelle Risultati/Run_*) e nuove cartelle Grafici_TH*_TL* vengono trovati da soli. Per la regressione, i punti dei grafici vengono estratti dal file .fig con MATLAB la prima volta (circa 25 secondi per run).'),
-      h('p', null, 'Per cambiare i testi della pagina usa il pulsante "Modifica testi" in alto: clicchi su un titolo o una frase e scrivi, poi "Salva" scrive il file ', h('code', null, 'testi.js'), ' in questa cartella (la prima volta scegli proprio quel file). Alla prossima pubblicazione il file viene copiato anche sul sito, dove il pulsante non compare. I numeri restano calcolati dai file dei modelli: se una frase modificata contiene un numero che poi cambia, torna al testo originale.'))));
+      h('p', null, 'I testi della pagina si cambiano con "Modifica i testi" (in fondo alla pagina, qui o sul sito): serve il token di GitHub del repository pubblico. Il salvataggio scrive ', h('code', null, 'testi.js'), ' direttamente su GitHub; prima di ricostruire il sito da qui, esegui git pull in Elaborato/dashboard_public: lo script di pubblicazione riporta testi.js in questa cartella. I numeri restano calcolati dai file dei modelli: se una frase modificata contiene un numero che poi cambia, torna al testo originale.'))));
     view.append(card('Colori', null, h('div', { class: 'prose' }, h('ul', null,
       h('li', null, sw(c.s1), 'misura reale'), h('li', null, sw(c.s2), 'previsione del modello'),
       h('li', null, sw(c.s3), 'persistenza'), h('li', null, sw(c.s4), 'stessa ora del giorno prima'),
