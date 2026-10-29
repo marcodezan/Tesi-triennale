@@ -503,6 +503,7 @@
     view.textContent = '';
     syncTopbar();
     (r.sub || r.tab).render();
+    applyTexts(view);
     lastTab = r.path;
     window.scrollTo(0, y);
     if (!keepScroll) { revealActive(tabsEl, tabsEl.querySelector('[aria-current="page"]')); revealActive(subEl, subEl.querySelector('[aria-current="page"]')); }
@@ -526,6 +527,120 @@
   function thumbBtn(png, title, sub) {
     return h('button', { type: 'button', class: 'thumb', onclick: () => openImage({ path: png.path, src: png.src, title }) },
       h('img', { src: png.thumb, alt: title, loading: 'lazy' }), h('span', { class: 't1' }, title), sub ? h('span', { class: 't2' }, sub) : null);
+  }
+
+  // ------------------------------------------------------------------ texts edited on the page ("Modifica testi")
+  // Every text of the page can be replaced from testi.js: window.TESTI = { "original text": "new text" }.
+  // The original text is the key, so a sentence that contains a computed number stops being replaced when the
+  // number changes: the page never shows an edited text with an old number.
+  const EDIT_SEL = ['.view-head h2', '.view-head p', '.section-title', '.section-lead', '.card-head h3', '.card-head .desc',
+    '.fold-title', 'details.fold > summary .desc', '.callout > div', 'p.note', '.prose p', '.prose li', '.prose dt', '.prose dd',
+    '.tile .label', '.tile .who', 'ul.bullets li', '.chip-group-label', '.empty > div'].join(', ');
+  const SAVED_TX = () => (window.TESTI && typeof window.TESTI === 'object') ? window.TESTI : {};
+  const draft = store.get('testi_bozza', null);
+  let TX = Object.assign({}, draft && draft.tx ? draft.tx : SAVED_TX());
+  let editing = false, fileHandle = null;
+  function applyTexts(root) {
+    for (const el of root.querySelectorAll(EDIT_SEL)) {
+      if (el.closest('.table-wrap, .js-plotly-plot')) continue;
+      for (const n of [...el.childNodes]) {
+        if (n.nodeType !== 3 || n.nodeValue.trim().length < 2) continue;
+        const sp = document.createElement('span');
+        sp.className = 'edt'; sp.dataset.k = n.nodeValue;
+        sp.textContent = TX[n.nodeValue] != null ? TX[n.nodeValue] : n.nodeValue;
+        if (TX[n.nodeValue] != null) sp.classList.add('changed');
+        n.replaceWith(sp);
+      }
+    }
+    if (editing) setEditable(root, true);
+  }
+  function setEditable(root, on) {
+    for (const sp of root.querySelectorAll('.edt')) {
+      if (!on) { sp.removeAttribute('contenteditable'); continue; }
+      sp.setAttribute('contenteditable', 'plaintext-only');
+      if (sp.contentEditable !== 'plaintext-only') sp.setAttribute('contenteditable', 'true');
+      sp.spellcheck = true;
+    }
+  }
+  function unsaved() {
+    const a = TX, b = SAVED_TX();
+    return [...new Set(Object.keys(a).concat(Object.keys(b)))].filter(k => a[k] !== b[k]).length;
+  }
+  function commitText(sp) {
+    const k = sp.dataset.k, lead = k.match(/^\s*/)[0], trail = k.match(/\s*$/)[0];
+    const v = sp.textContent.replace(/\s+/g, ' ').trim();
+    if (!v || lead + v + trail === k) { delete TX[k]; sp.textContent = k; sp.classList.remove('changed'); }
+    else { TX[k] = lead + v + trail; if (sp.textContent !== TX[k]) sp.textContent = TX[k]; sp.classList.add('changed'); }
+    store.set('testi_bozza', unsaved() ? { tx: TX } : null);
+    updateEditBar();
+  }
+  view.addEventListener('focusout', e => { if (editing && e.target.classList && e.target.classList.contains('edt')) commitText(e.target); });
+  view.addEventListener('keydown', e => {
+    if (!editing || !e.target.classList || !e.target.classList.contains('edt')) return;
+    if (e.key === 'Enter') { e.preventDefault(); e.target.blur(); }
+    if (e.key === 'Escape') { e.target.textContent = TX[e.target.dataset.k] != null ? TX[e.target.dataset.k] : e.target.dataset.k; e.target.blur(); }
+  });
+  // a text inside the title of a folded card: clicking it edits it instead of opening the card
+  view.addEventListener('click', e => { if (editing && e.target.closest && e.target.closest('summary .edt')) e.preventDefault(); });
+
+  const editBar = h('div', { class: 'editbar', hidden: true, role: 'region', 'aria-label': 'Modifica dei testi' });
+  document.body.append(editBar);
+  const editBtn = h('button', { type: 'button', class: 'ghost-btn', onclick: () => toggleEditing() }, 'Modifica testi');
+  if (!D.public) document.querySelector('.topbar-actions').prepend(editBtn);
+  function editMsg(text) { const m = editBar.querySelector('.eb-msg'); if (m) m.textContent = text; }
+  function updateEditBar() {
+    const n = unsaved();
+    editBtn.textContent = editing ? 'Fine modifica' : 'Modifica testi' + (n ? ' •' : '');
+    editBtn.setAttribute('aria-pressed', String(editing));
+    editBar.hidden = !editing;
+    if (!editing) return;
+    editBar.textContent = '';
+    editBar.append(
+      h('div', { class: 'eb-text' }, h('b', null, 'Modifica dei testi. '), 'Clicca su un titolo o una frase e scrivi; Invio conferma, Esc annulla. Lascia vuoto per tornare al testo originale. I numeri dei grafici e delle tabelle non si modificano.'),
+      h('div', { class: 'eb-actions' },
+        h('span', { class: 'eb-count' }, n ? `${n} ${n === 1 ? 'modifica da salvare' : 'modifiche da salvare'}` : 'Nessuna modifica da salvare'),
+        h('button', { type: 'button', class: 'primary-btn no-arrow', disabled: !n, onclick: () => saveTexts() }, 'Salva'),
+        h('button', { type: 'button', class: 'ghost-btn', disabled: !n, onclick: () => discardTexts() }, 'Annulla le modifiche'),
+        h('button', { type: 'button', class: 'ghost-btn', onclick: () => toggleEditing() }, 'Fine')),
+      h('div', { class: 'eb-msg note', 'aria-live': 'polite' }));
+  }
+  function toggleEditing() {
+    if (editing && document.activeElement && document.activeElement.classList.contains('edt')) document.activeElement.blur();
+    editing = !editing;
+    document.body.classList.toggle('editing', editing);
+    setEditable(view, editing);
+    updateEditBar();
+  }
+  function textsFile() {
+    const keys = Object.keys(TX).sort((a, b) => a.localeCompare(b, 'it'));
+    const obj = {}; for (const k of keys) obj[k] = TX[k];
+    return '// Testi della dashboard cambiati con il pulsante "Modifica testi".\n' +
+      '// Ogni voce: "testo originale": "testo nuovo". Se il testo originale cambia (per esempio perché cambia un numero\n' +
+      '// calcolato), la voce smette di applicarsi e la pagina mostra di nuovo il testo originale.\n' +
+      'window.TESTI = ' + JSON.stringify(obj, null, 2) + ';\n';
+  }
+  function savedOk(text) { window.TESTI = Object.assign({}, TX); store.set('testi_bozza', null); updateEditBar(); editMsg(text); }
+  async function saveTexts() {
+    const body = textsFile();
+    if (window.showSaveFilePicker) {
+      try {
+        if (!fileHandle) fileHandle = await window.showSaveFilePicker({ suggestedName: 'testi.js',
+          types: [{ description: 'Testi della dashboard', accept: { 'text/javascript': ['.js'] } }] });
+        const w = await fileHandle.createWritable(); await w.write(body); await w.close();
+        savedOk(`Salvato in ${fileHandle.name}. Se non l'hai già fatto, il file giusto è testi.js nella cartella della dashboard (Elaborato/dashboard).`);
+        return;
+      } catch (e) {
+        if (e && e.name === 'AbortError') return;
+        fileHandle = null;
+      }
+    }
+    const a = h('a', { href: URL.createObjectURL(new Blob([body], { type: 'text/javascript;charset=utf-8' })), download: 'testi.js' });
+    document.body.append(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 500);
+    savedOk('Scaricato testi.js: spostalo nella cartella Elaborato/dashboard al posto di quello vecchio.');
+  }
+  function discardTexts() {
+    TX = Object.assign({}, SAVED_TX()); store.set('testi_bozza', null);
+    render(true); editMsg('Modifiche annullate: la pagina mostra di nuovo i testi salvati.');
   }
 
   // ================================================================== VIEW: overview
@@ -1504,7 +1619,7 @@
     const winRow = h('div', { class: 'filters' },
       h('label', { class: 'ctl' }, h('span', null, isAbr ? 'Dal' : 'Da'), fromIn),
       h('label', { class: 'ctl' }, h('span', null, isAbr ? 'Al' : 'A'), toIn),
-      h('div', { class: 'ctl' }, h('span', null, ' '), h('button', { type: 'button', class: 'ghost-btn', onclick: () => applyRange(parseIn(fromIn.value), parseIn(toIn.value)) }, 'Applica')),
+      h('div', { class: 'ctl' }, h('span', { class: 'ctl-spacer', 'aria-hidden': 'true' }), h('button', { type: 'button', class: 'ghost-btn', onclick: () => applyRange(parseIn(fromIn.value), parseIn(toIn.value)) }, 'Applica')),
       h('div', { class: 'ctl' }, h('span', null, 'Durata della finestra (dall\'inizio attuale)'),
         h('div', { class: 'seg' }, quick.map(([l, d]) => h('button', { type: 'button', 'aria-pressed': 'false', onclick: () => applyRange(expRange[0], expRange[0] + d) }, l)),
           h('button', { type: 'button', 'aria-pressed': 'false', onclick: () => applyRange(xmin, xmax) }, 'Tutto il test'))),
@@ -1587,7 +1702,7 @@
         if (isAbr) row.push(base.yest[j]);
         lines.push(row.map(v => v == null ? '' : String(v).replace('.', ',')).join(';'));
       }
-      const blob = new Blob(['﻿' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8' });
+      const blob = new Blob([String.fromCharCode(0xFEFF) + lines.join('\r\n')], { type: 'text/csv;charset=utf-8' });
       const a = h('a', { href: URL.createObjectURL(blob), download: `finestra_${S.expModel}_${seasonKey}.csv` });
       document.body.append(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 500);
     }
@@ -1717,7 +1832,7 @@
     });
     pos[0].forEach((p, j) => { if (p.k >= 0) g.append(sv('text', { x: p.x - 18, y: p.y + 4, 'text-anchor': 'end', fill: c.text2, 'font-size': 12, 'font-family': FONT }, net.inputs[p.k] || '')); });
     const lastCol = pos[pos.length - 1];
-    lastCol.forEach(p => { if (p.k >= 0) g.append(sv('text', { x: p.x + 18, y: p.y + 4, fill: c.text2, 'font-size': 12, 'font-family': FONT }, 'P̂ [kW]')); });
+    lastCol.forEach(p => { if (p.k >= 0) g.append(sv('text', { x: p.x + 18, y: p.y + 4, fill: c.text2, 'font-size': 12, 'font-family': FONT }, 'P' + String.fromCharCode(0x302) + ' [kW]')); });
     return sv('svg', { viewBox: `0 0 ${W} ${H}`, width: '100%', style: `max-width:${W}px;display:block;margin:0 auto`, role: 'img', 'aria-label': `Neuroni e collegamenti di ${net.label}` }, g);
   }
 
@@ -1829,7 +1944,7 @@
     view.append(g);
     if (net.kind === 'ff') {
       view.append(card('Neuroni e collegamenti', 'Ogni cerchio è un neurone, ogni linea un peso. Negli strati con molti neuroni ne sono disegnati solo alcuni (⋮). Lo strato di uscita restituisce la potenza stimata nello stesso istante dei dati in ingresso.', neuronGraph(net)));
-      if (net.id === 'single_neuron') view.append(h('p', { class: 'note' }, 'Un solo neurone lineare calcola P̂ = w₁·MODULE_TEMP + w₂·Amb_Temp + w₃·WIND_Speed + w₄·IRR + b: la stessa forma della regressione lineare multipla, ma con i pesi trovati dall\'ottimizzatore Adam sui dati normalizzati.'));
+      if (net.id === 'single_neuron') view.append(h('p', { class: 'note' }, 'Un solo neurone lineare calcola P' + String.fromCharCode(0x302) + ' = w₁·MODULE_TEMP + w₂·Amb_Temp + w₃·WIND_Speed + w₄·IRR + b: la stessa forma della regressione lineare multipla, ma con i pesi trovati dall\'ottimizzatore Adam sui dati normalizzati.'));
     } else {
       view.append(card('Come usa il tempo', `La rete legge la finestra un passo alla volta (${net.stepName}). Dopo l'ultimo passo, lo stato finale della cella passa allo strato completamente connesso, che produce la previsione.`, unrolledLSTM(net)));
     }
@@ -1882,7 +1997,8 @@
       h('p', null, 'Ogni pagina comincia con un riquadro "In sintesi" con i risultati principali; seguono i grafici e, in fondo, le tabelle complete, che si aprono con un clic. Le scelte fatte nei filtri vengono ricordate dal browser.'))));
     if (!D.public) view.append(card('Come aggiornare', null, h('div', { class: 'prose' },
       h('p', null, 'Quando rilanci uno script o aggiungi risultati, fai doppio clic su ', h('code', null, 'aggiorna_dashboard.bat'), ' (in questa cartella) e ricarica la pagina. Lo script ', h('code', null, 'Elaborato/scripts/build_dashboard.py'), ' rilegge tutti i file dei modelli, ricalcola le metriche e riscrive ', h('code', null, 'data.js'), '. Non modifica nulla nelle cartelle dei modelli.'),
-      h('p', null, 'Nuovi run della regressione (cartelle Risultati/Run_*) e nuove cartelle Grafici_TH*_TL* vengono trovati da soli. Per la regressione, i punti dei grafici vengono estratti dal file .fig con MATLAB la prima volta (circa 25 secondi per run).'))));
+      h('p', null, 'Nuovi run della regressione (cartelle Risultati/Run_*) e nuove cartelle Grafici_TH*_TL* vengono trovati da soli. Per la regressione, i punti dei grafici vengono estratti dal file .fig con MATLAB la prima volta (circa 25 secondi per run).'),
+      h('p', null, 'Per cambiare i testi della pagina usa il pulsante "Modifica testi" in alto: clicchi su un titolo o una frase e scrivi, poi "Salva" scrive il file ', h('code', null, 'testi.js'), ' in questa cartella (la prima volta scegli proprio quel file). Alla prossima pubblicazione il file viene copiato anche sul sito, dove il pulsante non compare. I numeri restano calcolati dai file dei modelli: se una frase modificata contiene un numero che poi cambia, torna al testo originale.'))));
     view.append(card('Colori', null, h('div', { class: 'prose' }, h('ul', null,
       h('li', null, sw(c.s1), 'misura reale'), h('li', null, sw(c.s2), 'previsione del modello'),
       h('li', null, sw(c.s3), 'persistenza'), h('li', null, sw(c.s4), 'stessa ora del giorno prima'),
@@ -1941,4 +2057,5 @@
   // ------------------------------------------------------------------ start
   applyTheme();
   render(false);
+  updateEditBar();
 })();
