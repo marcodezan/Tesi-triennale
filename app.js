@@ -761,11 +761,15 @@
     const ok = ABR.configs.filter(abrHasData);
     const tls = [...new Set(ok.map(x => x.tl))].sort((a, b) => a - b);
     const tileTls = tls.filter(t => [1, 12, 24].includes(t));
-    view.append(sectionTitle('In sintesi', null, 'La configurazione con il MAE medio più basso per ciascun orizzonte di previsione (media delle 4 stagioni).'));
+    const tl1 = ok.filter(x => x.tl === 1).map(x => abrVal(x, 'mae', 'mean'));
+    view.append(sectionTitle('In sintesi', null, 'La configurazione con il MAE medio più basso per ciascun orizzonte di previsione (media delle 4 stagioni).' +
+      (tl1.length > 1 ? ` A 1 ora tutte le ${tl1.length} configurazioni stanno tra ${fmt(Math.min(...tl1), 2)} e ${fmt(Math.max(...tl1), 2)} kWh.` : '')));
     view.append(h('div', { class: 'grid three' }, tileTls.map(tl => {
       const b = bestOf(ok.filter(x => x.tl === tl), x => abrVal(x, 'mae', 'mean'));
-      return tile(`Previsione a ${tl} ${tl === 1 ? 'ora' : 'ore'}`, `${b.id}${b.preferred ? ' · preferita' : ''}`, fmt(abrVal(b, 'mae', 'mean'), 2), 'kWh MAE',
-        [h('span', null, 'vs stessa ora di ieri ', signed(abrVal(b, 'skill_yest', 'mean'))), fact('nMAE nominale', fmt(abrVal(b, 'nmae_nom', 'mean'), 2) + ' %')], b.preferred);
+      const pf = ok.find(x => x.tl === tl && x.preferred && x !== b);
+      return tile(`Previsione a ${tl} ${tl === 1 ? 'ora' : 'ore'}`, `${b.id}${b.preferred ? ' · preferita' : ' · MAE più basso'}`, fmt(abrVal(b, 'mae', 'mean'), 2), 'kWh MAE',
+        [h('span', null, 'vs stessa ora di ieri ', signed(abrVal(b, 'skill_yest', 'mean'))), fact('nMAE nominale', fmt(abrVal(b, 'nmae_nom', 'mean'), 2) + ' %'),
+          pf ? fact('preferita', `${pf.id} (${fmt(abrVal(pf, 'mae', 'mean'), 2)} kWh)`) : null], b.preferred);
     })));
 
     const seasonOpts = [{ value: 'mean', label: 'Media delle 4 stagioni' }].concat(ABR_SEASONS.map(s => ({ value: s.key, label: s.label })));
@@ -858,16 +862,15 @@
       const e = x.seasons[ss.key];
       rows.push({ cfg: x.id, season: ss.label, n: e.base.n_test, mae: abrMae(e), mape: abrMape(e), pers: x.tl <= ABR_PERS_MAX_TL ? e.base.pers.mae : null, yest: e.base.yest.mae,
         skp: abrSeasonVal(e, 'skill_pers', x.tl), sky: abrSeasonVal(e, 'skill_yest', x.tl), nnom: abrSeasonVal(e, 'nmae_nom', x.tl),
-        src: e.csv ? 'CSV' : e.file ? 'Metrics.txt' : '—', d: e.csv && e.file ? e.csv.mae - e.file.mae : null, _hl: x.preferred });
+        _hl: x.preferred });
     }
-    view.append(foldCard(`Tutte le stagioni di tutte le configurazioni (${rows.length} righe)`, `Persistenza e stessa ora di ieri sono calcolate dai dati misurati sugli stessi campioni di test. "Δ" confronta il MAE ricalcolato dal CSV con Metrics.txt.`,
+    view.append(foldCard(`Tutte le stagioni di tutte le configurazioni (${rows.length} righe)`, `Metriche ricalcolate dai file Risultati_<stagione>.csv; persistenza e stessa ora di ieri sono calcolate dai dati misurati sugli stessi campioni di test.`,
       table([
         { key: 'cfg', label: 'Configurazione' }, { key: 'season', label: 'Stagione' }, { key: 'n', label: 'Ore test', num: true },
         { key: 'mae', label: 'MAE [kWh]', num: true, fmt: v => fmt(v, 2) }, { key: 'mape', label: 'MAPE diurno [%]', num: true, fmt: v => fmt(v, 1) },
         { key: 'pers', label: 'MAE persistenza', num: true, fmt: v => fmt(v, 2) }, { key: 'yest', label: 'MAE ieri', num: true, fmt: v => fmt(v, 2) },
         { key: 'skp', label: 'vs persistenza', num: true, render: r => signed(r.skp) }, { key: 'sky', label: 'vs ieri', num: true, render: r => signed(r.sky) },
-        { key: 'nnom', label: 'nMAE nom. [%]', num: true, fmt: v => fmt(v, 2) }, { key: 'src', label: 'Fonte' },
-        { key: 'd', label: 'Δ CSV − Metrics', num: true, fmt: v => fmtS(v, 3) },
+        { key: 'nnom', label: 'nMAE nom. [%]', num: true, fmt: v => fmt(v, 2) },
       ], rows, { scroll: true })));
   }
 
@@ -903,7 +906,7 @@
     const mae = abrMae(s);
     view.append(sectionTitle(`${seasonLabel(S.abrDetSeason)} · ${cf.id}`, null, `Test dal ${s.base.t_start.slice(0, 16)} al ${s.base.t_end.slice(0, 16)}.`));
     view.append(h('div', { class: 'grid four' },
-      tile('MAE della rete', `${cf.id} · ${seasonLabel(S.abrDetSeason)}`, fmt(mae, 2), 'kWh', [fact('MAPE diurno', fmt(abrMape(s), 1) + ' %'), fact('Fonte', s.csv ? 'CSV' : s.file ? 'Metrics.txt' : '—')]),
+      tile('MAE della rete', `${cf.id} · ${seasonLabel(S.abrDetSeason)}`, fmt(mae, 2), 'kWh', [fact('MAPE diurno', fmt(abrMape(s), 1) + ' %')]),
       tile('Stessa ora di ieri', 'valore di 24 ore prima (riferimento principale)', fmt(s.base.yest.mae, 2), 'kWh', [h('span', null, 'rete ', signed(abrSeasonVal(s, 'skill_yest', cf.tl)))]),
       cf.tl <= ABR_PERS_MAX_TL
         ? tile('Persistenza', `ultimo valore noto (${cf.tl} h prima)`, fmt(s.base.pers.mae, 2), 'kWh', [h('span', null, 'rete ', signed(abrSeasonVal(s, 'skill_pers', cf.tl)))])
@@ -911,7 +914,6 @@
       tile('Test', 'ore di test', fmt(s.base.n_test, 0), 'ore',
         [fact('Energia media', fmt(s.base.mean_real, 1) + ' kWh'), s.csv ? fact('R²', fmt(s.csv.r2, 3)) : null]),
     ));
-    if (s.csv && s.file) view.append(h('p', { class: 'note' }, `Controllo di riproducibilità: MAE dal CSV ${fmt(s.csv.mae, 2)} kWh, in Metrics.txt ${fmt(s.file.mae, 2)} kWh.`));
     const ts = chartDiv('tall');
     view.append(card('Energia misurata e prevista nel test', 'Trascina sulla barra in basso per scegliere il periodo; passa il mouse (o tocca) per leggere tutti i valori di un\'ora.', ts,
       s.series ? explorerButton('abr', cf.id, S.abrDetSeason) : null));
@@ -1050,7 +1052,8 @@
     view.append(sectionTitle('In sintesi', null, `${F.configs.length} configurazioni provate su ${seasons.length} ${seasons.length === 1 ? 'stagione' : 'stagioni'}.`));
     view.append(h('div', { class: 'grid three' },
       tile('Configurazione migliore', `${best.id} · ${exoDesc(best)}`, fmt(gdVal(F, best, 'mae', 'mean'), 2), 'kW MAE',
-        [h('span', null, 'vs persistenza ', signed(gdVal(F, best, 'skill', 'mean'))), fact('R²', fmt(gdVal(F, best, 'r2', 'mean'), 3))], true),
+        [h('span', null, 'vs persistenza ', signed(gdVal(F, best, 'skill', 'mean'))), fact('R²', fmt(gdVal(F, best, 'r2', 'mean'), 3)),
+          F.configs.some(x => x.preferred && x !== best) ? fact('preferita', F.configs.filter(x => x.preferred).map(x => `${x.id} (${fmt(gdVal(F, x, 'mae', 'mean'), 2)} kW)`).join(', ')) : null], true),
       tile('Battono la persistenza', 'in media sulle stagioni', `${beat} su ${skills.length}`, 'configurazioni',
         [fact('miglioramento massimo', fmtS(Math.max(...skills), 1) + ' %'), fact('minimo', fmtS(Math.min(...skills), 1) + ' %')]),
       easy && hard ? tile('Differenze tra stagioni', `${best.id}: MAE nella stagione più facile e più difficile`, `${fmt(easy.v, 1)} – ${fmt(hard.v, 1)}`, 'kW',
@@ -1090,7 +1093,8 @@
         { key: 'lr', label: 'Learning rate', num: true }], sum, { sortKey: 'mae' })));
 
     // --- one configuration
-    const cf = F.configs.find(x => x.id === S[cfK]) || best;
+    const pref = F.configs.find(x => x.preferred);
+    const cf = F.configs.find(x => x.id === S[cfK]) || pref || best;
     const avail = seasons.filter(s => cf.seasons[s.key]);
     const sk = avail.some(s => s.key === S[ssK]) ? S[ssK] : (avail.find(s => s.key === 'Estate_3') || avail[0]).key;
     view.append(sectionTitle('Dettaglio di una configurazione', 'dettaglio', 'Come si comporta una configurazione stagione per stagione, e nel tempo dentro il test.'));
@@ -1917,7 +1921,7 @@
       ))));
     view.append(card('Dati e cautele', null, h('div', { class: 'prose' }, h('ul', null,
       h('li', null, 'Regressione: divisione train/test casuale senza seed, quindi ogni run dà numeri leggermente diversi. Il run usato nella tesi è ' + REG.used_run + '.'),
-      h('li', null, 'Abruzzo: le metriche vengono dai CSV quando esistono, altrimenti da Metrics.txt (copia della console). I test durano circa 9 giorni per stagione. In Estate 2020 il test contiene un buco di circa 17 ore riempito per interpolazione lineare.'),
+      h('li', null, 'Abruzzo: le metriche sono ricalcolate dai file Risultati_<stagione>.csv della riesecuzione di tutte le configurazioni (26/10/2026). Metrics.txt contiene esecuzioni precedenti ed è superato: non è usato. I test durano circa 9 giorni per stagione. In Estate 2020 il test contiene un buco di circa 17 ore riempito per interpolazione lineare.'),
       h('li', null, 'Generation_data non ha data e ora: giorni e stagioni sono ricostruiti (foglio Riepilogo) e il passo di 5 minuti è una stima. Le notti non ci sono.'),
       h('li', null, 'Le medie "sulle stagioni" sono medie semplici delle metriche di ogni stagione.'),
     ))));
@@ -1925,7 +1929,7 @@
       h('p', null, 'Le prove scartate durante il lavoro e le copie duplicate dei grafici non compaiono nella dashboard.'))));
     view.append(card('Fonti', null, h('div', { class: 'prose' }, h('ul', null,
       REG.runs.map(r => h('li', null, h('code', null, r.source), r.scatter_source ? [' · punti: ', h('code', null, r.scatter_source)] : null)),
-      h('li', null, h('code', null, ABR.metrics_source), ' e ', h('code', null, 'Monomega abruzzo/Grafici_*/Risultati_*.csv')),
+      h('li', null, h('code', null, 'Monomega abruzzo/Grafici_*/Risultati_*.csv')),
       h('li', null, h('code', null, 'Monomega abruzzo/Abruzzo_diviso_in_stagioni.xlsx'), ' (serie misurate, riferimenti ingenui)'),
       h('li', null, h('code', null, 'Generation data/LSTM_ESOGENA/Reti_stagioni_separate/Grafici_*/Risultati_*.csv'), ' e ', h('code', null, 'Generation data/LSTM_ENDOGENA/Reti_con_stagioni_separate/Grafici_*/Risultati_*.csv')),
       h('li', null, h('code', null, 'Generation data/LSTM_ESOGENA/Reti_stagioni_unite/Grafici_ANNI_*/Risultati_*.csv'), ' e ', h('code', null, 'Generation data/LSTM_ENDOGENA/Reti_con_stagioni_unite/Grafici_ANNI_*/Risultati_*.csv')),
