@@ -374,7 +374,8 @@
     { value: 'wmape', label: 'wMAPE diurno [%]', unit: '%', d: 1 },
     { value: 'nmae_mean', label: 'nMAE sulla potenza media [%]', unit: '%', d: 1 },
     { value: 'nmae_ref', label: 'nMAE sulla potenza massima [%]', unit: '%', d: 2 },
-    { value: 'skill', label: 'Miglioramento vs persistenza [%]', unit: '%', d: 1 },
+    { value: 'ss', label: 'Skill score vs persistenza (RMSE) [%]', unit: '%', d: 1 },
+    { value: 'skill', label: 'Miglioramento del MAE vs persistenza [%]', unit: '%', d: 1 },
     { value: 'r2', label: 'R²', unit: '', d: 3 },
   ];
   function exoSeasonVal(s, m, ofPers) {
@@ -383,10 +384,13 @@
       case 'mae': return x.mae; case 'mape': return x.mape_day; case 'wmape': return x.wmape_day;
       case 'nmae_mean': return 100 * x.mae / x.mean_real; case 'nmae_ref': return 100 * x.mae / P_MAX;
       case 'skill': return ofPers ? null : 100 * (1 - s.metrics.mae / s.pers.mae);
+      case 'ss': return ofPers ? null : 100 * (1 - s.metrics.rmse / s.pers.rmse);
       case 'r2': return x.r2;
     }
     return null;
   }
+  // metrics measured against persistence (higher = better, no persistence value of their own)
+  function isSk(m) { return m === 'skill' || m === 'ss'; }
   function exoVal(c, m, season, ofPers) { return gdVal(EXO, c, m, season, ofPers); }
   function exoConfig(id) { return EXO.configs.find(c => c.id === id) || exoPref; }
   function exoMetricDef(v) { return EXO_METRICS.find(m => m.value === v) || EXO_METRICS[0]; }
@@ -721,7 +725,7 @@
       rows.push({ ds: DS_GD, fam: fk, part: FAM_NAME[fk], key: fk + '-' + c.id, name: c.id, step: '5 min (stima)',
         th: `${c.th} passi (${c.th * EXO.step_min} min)`, tl: `${c.tl} ${c.tl === 1 ? 'passo' : 'passi'} (${c.tl * EXO.step_min} min)`, cells: c.cells,
         mae: gdVal(F, c, 'mae', 'mean'), unit: 'kW', nmae_mean: gdVal(F, c, 'nmae_mean', 'mean'), nmae_ref: gdVal(F, c, 'nmae_ref', 'mean'),
-        skill: gdVal(F, c, 'skill', 'mean'), r2: gdVal(F, c, 'r2', 'mean'), src: F.joined ? 'CSV ricalcolato (anno 3)' : 'CSV ricalcolato', _hl: c.preferred });
+        skill: gdVal(F, c, 'skill', 'mean'), ss: gdVal(F, c, 'ss', 'mean'), r2: gdVal(F, c, 'r2', 'mean'), src: F.joined ? 'CSV ricalcolato (anno 3)' : 'CSV ricalcolato', _hl: c.preferred });
     }
     for (const c of ABR.configs) {
       if (!abrHasData(c)) continue;
@@ -734,7 +738,7 @@
     return rows;
   }
   // best configuration of a Generation_data family (mean over its seasons)
-  function gdBest(F, m = 'mae', cfgs) { return bestOf(cfgs || F.configs, cf => gdVal(F, cf, m, 'mean'), m === 'skill' || m === 'r2'); }
+  function gdBest(F, m = 'mae', cfgs) { return bestOf(cfgs || F.configs, cf => gdVal(F, cf, m, 'mean'), isSk(m) || m === 'r2'); }
 
   function datasetCard(title, intro, facts, body, path, btnLabel) {
     return h('section', { class: 'card dataset-card' },
@@ -1188,7 +1192,7 @@
   // mean over the seasons that both configurations have (or over one configuration's seasons)
   function commonKeys(F, a, b) { return F.seasons.map(s => s.key).filter(k => (!a || a.seasons[k]) && (!b || b.seasons[k])); }
   function meanOn(keys, cf, m, ofPers, samples) { return cf ? mean(keys.map(k => exoSeasonVal(gdView(cf.seasons[k], samples), m, ofPers))) : null; }
-  const LOWER_BETTER = { mae: true, mape: true, wmape: true, nmae_mean: true, nmae_ref: true, skill: false, r2: false };
+  const LOWER_BETTER = { mae: true, mape: true, wmape: true, nmae_mean: true, nmae_ref: true, skill: false, ss: false, r2: false };
   // positive = the exogenous network is better
   function advantage(m, endoV, exoV) { if (endoV == null || exoV == null) return null; return LOWER_BETTER[m] ? endoV - exoV : exoV - endoV; }
 
@@ -1228,10 +1232,11 @@
     view.append(sectionTitle('In sintesi', null, `${F.configs.length} configurazioni provate su ${seasons.length} ${seasons.length === 1 ? 'stagione' : 'stagioni'}.`));
     view.append(h('div', { class: 'grid three' },
       tile('Configurazione migliore', `${best.id} · ${exoDesc(best)}`, fmt(gdVal(F, best, 'mae', 'mean'), 2), 'kW MAE',
-        [h('span', null, 'vs persistenza ', signed(gdVal(F, best, 'skill', 'mean'))), fact('R²', fmt(gdVal(F, best, 'r2', 'mean'), 3)),
+        [h('span', null, 'vs persistenza ', signed(gdVal(F, best, 'skill', 'mean'))), h('span', null, 'skill score ', signed(gdVal(F, best, 'ss', 'mean'))), fact('R²', fmt(gdVal(F, best, 'r2', 'mean'), 3)),
           F.configs.some(x => x.preferred && x !== best) ? fact('preferita', F.configs.filter(x => x.preferred).map(x => `${x.id} (${fmt(gdVal(F, x, 'mae', 'mean'), 2)} kW)`).join(', ')) : null], true),
       tile('Battono la persistenza', 'in media sulle stagioni', `${beat} su ${skills.length}`, 'configurazioni',
-        [fact('miglioramento massimo', fmtS(Math.max(...skills), 1) + ' %'), fact('minimo', fmtS(Math.min(...skills), 1) + ' %')]),
+        [fact('miglioramento massimo', fmtS(Math.max(...skills), 1) + ' %'), fact('minimo', fmtS(Math.min(...skills), 1) + ' %'),
+          fact('con skill score positivo', `${F.configs.filter(cf => gdVal(F, cf, 'ss', 'mean') > 0).length} su ${skills.length}`)]),
       easy && hard ? tile('Differenze tra stagioni', `${best.id}: MAE nella stagione più facile e più difficile`, `${fmt(easy.v, 1)} – ${fmt(hard.v, 1)}`, 'kW',
         [fact('più facile', easy.s.label), fact('più difficile', hard.s.label)]) : null,
     ));
@@ -1249,22 +1254,23 @@
     const hm = chartDiv('short'), hp = chartDiv('short');
     const where = sKey === 'mean' ? 'Media sulle stagioni.' : seasonLabel(sKey) + '.';
     g1.append(card(`${met.label} · ${cells} celle`, `${where} TL e TH in passi da 5 minuti; — = combinazione non provata.`, hm));
-    const rightIsPers = met.value === 'skill';
+    const rightIsPers = isSk(met.value);
     g1.append(card(rightIsPers ? 'MAE della persistenza [kW]' : 'Miglioramento rispetto alla persistenza [%]',
       rightIsPers ? 'Riferimento ingenuo: l\'ultimo valore noto (la misura di TL passi prima), sugli stessi campioni.' : 'Riduzione del MAE rispetto all\'ultimo valore noto. Blu = la rete è migliore, rosso = peggiore.', hp));
-    gridHeat(hm, ths, tls, (th, tl) => { const cf = gdCfg(F, th, tl, cells); return cf ? gdVal(F, cf, met.value, sKey) : null; }, met, met.value === 'skill', `${fk}_mappa`);
+    gridHeat(hm, ths, tls, (th, tl) => { const cf = gdCfg(F, th, tl, cells); return cf ? gdVal(F, cf, met.value, sKey) : null; }, met, isSk(met.value), `${fk}_mappa`);
     if (rightIsPers) gridHeat(hp, ths, tls, (th, tl) => { const cf = gdCfg(F, th, tl, cells); return cf ? gdVal(F, cf, 'mae', sKey, true) : null; }, exoMetricDef('mae'), false, `${fk}_mappa_persistenza`);
     else gridHeat(hp, ths, tls, (th, tl) => { const cf = gdCfg(F, th, tl, cells); return cf ? gdVal(F, cf, 'skill', sKey) : null; }, exoMetricDef('skill'), true, `${fk}_mappa_miglioramento`);
 
     const cfK = 'gdCfg_' + fk, ssK = 'gdSeason_' + fk;
     const sum = F.configs.map(cf => ({ id: cf.id, th: cf.th, tl: cf.tl, cells: cf.cells, lr: cf.lr,
       mae: gdVal(F, cf, 'mae', 'mean'), mape: gdVal(F, cf, 'mape', 'mean'), wmape: gdVal(F, cf, 'wmape', 'mean'), r2: gdVal(F, cf, 'r2', 'mean'),
-      pers: gdVal(F, cf, 'mae', 'mean', true), skill: gdVal(F, cf, 'skill', 'mean'), _hl: cf === best }));
+      pers: gdVal(F, cf, 'mae', 'mean', true), skill: gdVal(F, cf, 'skill', 'mean'), ss: gdVal(F, cf, 'ss', 'mean'), _hl: cf === best }));
     view.append(card('Classifica (media delle stagioni)', 'Ordinata per MAE; la barra blu segna la migliore. Clicca su una configurazione per vederne il dettaglio qui sotto.',
       table([{ key: 'id', label: 'Configurazione', render: r => linkBtn(r.id, () => { S[cfK] = r.id; save(); render(true); scrollToId('dettaglio'); }, 'Mostra il dettaglio') },
         { key: 'th', label: 'TH', num: true }, { key: 'tl', label: 'TL', num: true }, { key: 'cells', label: 'Celle', num: true },
         { key: 'mae', label: 'MAE [kW]', num: true, fmt: v => fmt(v, 2) }, { key: 'pers', label: 'MAE persistenza', num: true, fmt: v => fmt(v, 2) },
-        { key: 'skill', label: 'vs persistenza', num: true, render: r => signed(r.skill) }, { key: 'r2', label: 'R²', num: true, fmt: v => fmt(v, 3) },
+        { key: 'skill', label: 'vs persistenza (MAE)', num: true, render: r => signed(r.skill) },
+        { key: 'ss', label: 'Skill score (RMSE)', num: true, render: r => signed(r.ss), title: '1 − RMSE rete / RMSE persistenza' }, { key: 'r2', label: 'R²', num: true, fmt: v => fmt(v, 3) },
         { key: 'mape', label: 'MAPE diurno [%]', num: true, fmt: v => fmt(v, 1) }, { key: 'wmape', label: 'wMAPE [%]', num: true, fmt: v => fmt(v, 1) },
         { key: 'lr', label: 'Learning rate', num: true }], sum, { sortKey: 'mae' })));
 
@@ -1284,7 +1290,7 @@
     view.append(card(`${met.label} stagione per stagione · ${cf.id}`, `${exoDesc(cf)}. Clicca su una stagione per vederne il dettaglio qui sotto.`, dsz));
     const xs = avail.map(s => s.label);
     const sTr = [{ type: 'bar', name: 'LSTM', x: xs, y: avail.map(s => exoSeasonVal(gdView(cf.seasons[s.key]), met.value)), marker: { color: c[ROLE.model], opacity: avail.map(s => s.key === sk ? 1 : 0.45) } }];
-    if (met.value !== 'skill') sTr.push({ type: 'bar', name: `Persistenza (TL ${cf.tl})`, x: xs, y: avail.map(s => exoSeasonVal(gdView(cf.seasons[s.key]), met.value, true)), marker: { color: c.neutral } });
+    if (!isSk(met.value)) sTr.push({ type: 'bar', name: `Persistenza (TL ${cf.tl})`, x: xs, y: avail.map(s => exoSeasonVal(gdView(cf.seasons[s.key]), met.value, true)), marker: { color: c.neutral } });
     sTr.forEach(t => { t.hovertemplate = `${t.name}<br>%{x}: <b>%{y:.${met.d}f} ${met.unit}</b><extra></extra>`; });
     plot(dsz, sTr, { barmode: 'group', showlegend: true, yaxis: { title: { text: met.label }, zeroline: true, zerolinecolor: c.axis } }, `${fk}_${cf.id}_stagioni`);
     dsz.on('plotly_click', ev => { const p = ev.points && ev.points[0]; const s = p && avail.find(x => x.label === p.x); if (s) set(ssK, s.key); });
@@ -1292,7 +1298,7 @@
     const raw = cf.seasons[sk], s = gdView(raw), m = s.metrics;
     view.append(h('div', { class: 'grid four' },
       tile('MAE della rete', `${cf.id} · ${seasonLabel(sk)}`, fmt(m.mae, 2), 'kW', [fact('RMSE', fmt(m.rmse, 2)), fact('R²', fmt(m.r2, 3))]),
-      tile('Persistenza', `ultimo valore noto (${cf.tl} ${cf.tl === 1 ? 'passo' : 'passi'} prima)`, fmt(s.pers.mae, 2), 'kW', [h('span', null, 'rete ', signed(exoSeasonVal(s, 'skill')))]),
+      tile('Persistenza', `ultimo valore noto (${cf.tl} ${cf.tl === 1 ? 'passo' : 'passi'} prima)`, fmt(s.pers.mae, 2), 'kW', [h('span', null, 'rete ', signed(exoSeasonVal(s, 'skill'))), fact('RMSE', fmt(s.pers.rmse, 2)), h('span', null, 'skill score ', signed(exoSeasonVal(s, 'ss')))]),
       tile('Errori percentuali', 'ore diurne (> 5 % del massimo)', fmt(m.mape_day, 1), '% MAPE', [fact('wMAPE', fmt(m.wmape_day, 1) + ' %')]),
       tile('Test', joined ? `addestrata su ${raw.train.join(' + ')}` : 'ultimo 20 % del foglio', fmt(s.n_test, 0), 'campioni', [fact('su', fmt(raw.n_series, 0) + ' righe'),
         fact('Potenza media', fmt(m.mean_real, 1) + ' kW')]),
@@ -1336,14 +1342,16 @@
         const e0 = x2.seasons[ss.key]; if (!e0) continue;
         const e = gdView(e0);
         rows.push({ cfg: x2.id, season: ss.label, n: e.n_test, mae: e.metrics.mae, rmse: e.metrics.rmse, r2: e.metrics.r2, mape: e.metrics.mape_day,
-          wmape: e.metrics.wmape_day, pers: e.pers.mae, skill: exoSeasonVal(e, 'skill'), src: e0.metrics.source, _hl: x2 === best });
+          wmape: e.metrics.wmape_day, pers: e.pers.mae, prmse: e.pers.rmse, skill: exoSeasonVal(e, 'skill'), ss: exoSeasonVal(e, 'ss'), src: e0.metrics.source, _hl: x2 === best });
       }
       return table([
         { key: 'cfg', label: 'Configurazione' }, { key: 'season', label: 'Stagione' }, { key: 'n', label: 'Campioni test', num: true },
         { key: 'mae', label: 'MAE [kW]', num: true, fmt: v => fmt(v, 2) }, { key: 'rmse', label: 'RMSE [kW]', num: true, fmt: v => fmt(v, 2) },
         { key: 'r2', label: 'R²', num: true, fmt: v => fmt(v, 3) }, { key: 'mape', label: 'MAPE diurno [%]', num: true, fmt: v => fmt(v, 1) },
         { key: 'wmape', label: 'wMAPE [%]', num: true, fmt: v => fmt(v, 1) }, { key: 'pers', label: 'MAE persistenza', num: true, fmt: v => fmt(v, 2) },
-        { key: 'skill', label: 'vs persistenza', num: true, render: r => signed(r.skill) }, { key: 'src', label: 'File' },
+        { key: 'prmse', label: 'RMSE persistenza', num: true, fmt: v => fmt(v, 2) },
+        { key: 'skill', label: 'vs persistenza (MAE)', num: true, render: r => signed(r.skill) },
+        { key: 'ss', label: 'Skill score (RMSE)', num: true, render: r => signed(r.ss) }, { key: 'src', label: 'File' },
       ], rows, { scroll: true });
     }));
     view.append(foldCard('Ritardo in tutte le stagioni', 'Per ogni configurazione e stagione, lo spostamento k con l\'errore minimo (su tutto il test salvato): k = 0 vuol dire previsione in fase, k = TL che la rete si comporta come la persistenza.', () => {
@@ -1373,7 +1381,7 @@
     const mode = S.cmpMode === 'joined' ? 'joined' : 'sep', joined = mode === 'joined';
     const FN = GD[gdFam('endo', mode)], FX = GD[gdFam('exo', mode)];
     const met = exoMetricDef(S.cmpMetric);
-    const higher = met.value === 'skill' || met.value === 'r2';
+    const higher = isSk(met.value) || met.value === 'r2';
     const run = usedRun(), rb = bestReg(run);
     view.append(viewHead(DS_GD, 'Confronto tra i modelli',
       'Regressione, LSTM esogena e LSTM endogena sullo stesso impianto. La regressione stima la potenza nello stesso istante usando le misure meteo; le due LSTM la prevedono da 1 a 6 passi avanti (da 5 a 30 minuti), con la potenza passata e il meteo (esogena) o con la sola potenza passata (endogena).'));
@@ -1393,9 +1401,9 @@
     view.append(h('div', { class: 'grid four' },
       tile('Regressione', `${rb.label} · stima nello stesso istante`, fmt(rb.mae, 2), 'kW MAE', [fact('R²', fmt(rb.r2, 3)), fact('nMAE media', fmt(rb.nmae, 1) + ' %')]),
       tile('LSTM esogena', `${bx.id} · previsione a ${bx.tl * EXO.step_min} min`, fmt(gdVal(FX, bx, 'mae', 'mean'), 2), 'kW MAE',
-        [h('span', null, 'vs persistenza ', signed(gdVal(FX, bx, 'skill', 'mean'))), fact('R²', fmt(gdVal(FX, bx, 'r2', 'mean'), 3))]),
+        [h('span', null, 'vs persistenza ', signed(gdVal(FX, bx, 'skill', 'mean'))), h('span', null, 'skill score ', signed(gdVal(FX, bx, 'ss', 'mean'))), fact('R²', fmt(gdVal(FX, bx, 'r2', 'mean'), 3))]),
       tile('LSTM endogena', `${bn.id} · previsione a ${bn.tl * EXO.step_min} min`, fmt(gdVal(FN, bn, 'mae', 'mean'), 2), 'kW MAE',
-        [h('span', null, 'vs persistenza ', signed(gdVal(FN, bn, 'skill', 'mean'))), fact('R²', fmt(gdVal(FN, bn, 'r2', 'mean'), 3))]),
+        [h('span', null, 'vs persistenza ', signed(gdVal(FN, bn, 'skill', 'mean'))), h('span', null, 'skill score ', signed(gdVal(FN, bn, 'ss', 'mean'))), fact('R²', fmt(gdVal(FN, bn, 'r2', 'mean'), 3))]),
       diffs.length ? tile('Esogena contro endogena', 'MAE endogena − esogena, a parità di TH, TL e celle', fmtS(mean(diffs), 2), 'kW in media',
         [fact('l\'esogena è migliore in', `${exoWins} su ${diffs.length}`)]) : null,
     ));
@@ -1410,7 +1418,7 @@
     const hz = chartDiv('');
     const hzRows = tlsAll.map((t, i) => ({ tl: xl[i], exo: bxs[i] ? gdVal(FX, bxs[i], met.value, 'mean') : null, exoId: bxs[i] ? bxs[i].id : '—',
       endo: bns[i] ? gdVal(FN, bns[i], met.value, 'mean') : null, endoId: bns[i] ? bns[i].id : '—',
-      pers: met.value === 'skill' ? null : (bxs[i] || bns[i]) ? gdVal(bxs[i] ? FX : FN, bxs[i] || bns[i], met.value, 'mean', true) : null }));
+      pers: isSk(met.value) ? null : (bxs[i] || bns[i]) ? gdVal(bxs[i] ? FX : FN, bxs[i] || bns[i], met.value, 'mean', true) : null }));
     view.append(card(`${met.label} per orizzonte`, 'Passa il mouse (o tocca un punto) per leggere la configurazione usata.',
       [hz, tableToggle('Mostra i valori in tabella', table([{ key: 'tl', label: 'Orizzonte' },
         { key: 'exoId', label: 'Esogena' }, { key: 'exo', label: met.label, num: true, fmt: v => fmt(v, met.d) },
@@ -1420,12 +1428,31 @@
       marker: { size: 9, color, line: { color: c.surface, width: 2 } }, customdata: hzRows.map(r => idKey ? r[idKey] : ''),
       hovertemplate: `${name}${idKey ? ' · %{customdata}' : ''}<br><b>%{y:.${met.d}f} ${met.unit}</b><extra></extra>` });
     const hzTr = [mkLine('exo', 'exoId', 'LSTM esogena', c.s1), mkLine('endo', 'endoId', 'LSTM endogena', c.s2)];
-    if (met.value !== 'skill') hzTr.push(mkLine('pers', null, 'Persistenza', c.neutral, 'dot'));
+    if (!isSk(met.value)) hzTr.push(mkLine('pers', null, 'Persistenza', c.neutral, 'dot'));
     const rv = regMetric(rb, met.value);
     if (rv != null) hzTr.push(lineT(xl, xl.map(() => rv), `Regressione (${rb.label}), stima nello stesso istante`, c.s3,
       { line: { color: c.s3, width: 2, dash: 'dash' }, hovertemplate: `Regressione<br><b>%{y:.${met.d}f} ${met.unit}</b><extra></extra>` }));
     plot(hz, hzTr, { hovermode: 'closest', xaxis: { type: 'category', title: { text: 'Orizzonte di previsione TL' } },
-      yaxis: { title: { text: met.label }, rangemode: met.value === 'skill' ? 'normal' : 'tozero', zeroline: met.value === 'skill', zerolinecolor: c.axis } }, 'confronto_orizzonte');
+      yaxis: { title: { text: met.label }, rangemode: isSk(met.value) ? 'normal' : 'tozero', zeroline: isSk(met.value), zerolinecolor: c.axis } }, 'confronto_orizzonte');
+
+    // --- skill score against persistence, by horizon
+    view.append(sectionTitle('Skill score rispetto alla persistenza', 'skill', 'Lo skill score misura quanto una rete fa meglio della persistenza sugli stessi campioni: 0 = come la persistenza, valori positivi = meglio. Toglie l\'effetto della difficoltà della stagione e dell\'orizzonte, quindi permette di confrontare l\'esogena e l\'endogena in modo più corretto del solo errore in kW.'));
+    const ssAt = (F, tl) => bestOf(F.configs.filter(x => x.tl === tl), cf => gdVal(F, cf, 'ss', 'mean'), true);
+    const ssRows = tlsAll.map((t, i) => {
+      const a = ssAt(FX, t), b = ssAt(FN, t);
+      return { tl: xl[i], exoId: a ? a.id : '—', exo: a ? gdVal(FX, a, 'ss', 'mean') : null, exoMae: a ? gdVal(FX, a, 'skill', 'mean') : null,
+        endoId: b ? b.id : '—', endo: b ? gdVal(FN, b, 'ss', 'mean') : null, endoMae: b ? gdVal(FN, b, 'skill', 'mean') : null };
+    });
+    const ssd = chartDiv('short');
+    view.append(card('Skill score (RMSE) per orizzonte', 'Per ogni orizzonte, la configurazione di ciascuna rete con lo skill score medio più alto (media sulle stagioni). Passa il mouse su una barra per leggere la configurazione.',
+      [ssd, tableToggle('Mostra i valori in tabella', table([{ key: 'tl', label: 'Orizzonte' },
+        { key: 'exoId', label: 'Esogena' }, { key: 'exo', label: 'Skill score (RMSE)', num: true, render: r => signed(r.exo) }, { key: 'exoMae', label: 'vs persistenza (MAE)', num: true, render: r => signed(r.exoMae) },
+        { key: 'endoId', label: 'Endogena' }, { key: 'endo', label: 'Skill score (RMSE)', num: true, render: r => signed(r.endo) }, { key: 'endoMae', label: 'vs persistenza (MAE)', num: true, render: r => signed(r.endoMae) }], ssRows))]));
+    plot(ssd, [['exo', 'exoId', 'LSTM esogena', c.s1], ['endo', 'endoId', 'LSTM endogena', c.s2]].map(([k, idk, name, col]) => ({ type: 'bar', name, x: xl,
+      y: ssRows.map(r => r[k]), customdata: ssRows.map(r => r[idk]), marker: { color: col },
+      hovertemplate: `${name} · %{customdata}<br><b>%{y:+.1f} %</b><extra></extra>` })),
+    { barmode: 'group', xaxis: { type: 'category', title: { text: 'Orizzonte di previsione TL' } },
+      yaxis: { title: { text: 'Skill score vs persistenza [%]' }, zeroline: true, zerolinecolor: c.text2, zerolinewidth: 1 } }, 'confronto_skill_score');
 
     // --- exogenous vs endogenous, same configuration
     view.append(sectionTitle('Esogena contro endogena a parità di configurazione', 'pari', 'Stesse stagioni, stessi TH, TL e celle: cambia solo l\'ingresso. Le medie usano solo le stagioni che hanno entrambe le reti.'));
@@ -1446,7 +1473,7 @@
     };
     const g = h('div', { class: 'grid three' }); view.append(g);
     const dN = chartDiv('short'), dX = chartDiv('short'), dD = chartDiv('short');
-    const diverg = met.value === 'skill';
+    const diverg = isSk(met.value);
     g.append(card(`Endogena · ${met.label}`, `${cells} celle. — = combinazione non provata.`, dN));
     g.append(card(`Esogena · ${met.label}`, `${cells} celle.`, dX));
     g.append(card('Vantaggio dell\'esogena', LOWER_BETTER[met.value] ? 'Endogena − esogena: positivo (blu) = l\'esogena sbaglia meno.' : 'Esogena − endogena: positivo (blu) = l\'esogena è migliore.', dD));
@@ -1466,7 +1493,7 @@
       const tr = [
         { type: 'bar', name: 'Endogena', x: xs, y: ck.map(k => exoSeasonVal(gdView(pick.seasons[k]), met.value)), marker: { color: c.s2 } },
         { type: 'bar', name: 'Esogena', x: xs, y: ck.map(k => exoSeasonVal(gdView(b.seasons[k]), met.value)), marker: { color: c.s1 } }];
-      if (met.value !== 'skill') tr.push({ type: 'bar', name: `Persistenza (TL ${pick.tl})`, x: xs, y: ck.map(k => exoSeasonVal(gdView(pick.seasons[k]), met.value, true)), marker: { color: c.neutral } });
+      if (!isSk(met.value)) tr.push({ type: 'bar', name: `Persistenza (TL ${pick.tl})`, x: xs, y: ck.map(k => exoSeasonVal(gdView(pick.seasons[k]), met.value, true)), marker: { color: c.neutral } });
       tr.forEach(t => { t.hovertemplate = `${t.name}<br>%{x}: <b>%{y:.${met.d}f} ${met.unit}</b><extra></extra>`; });
       plot(d, tr, { barmode: 'group', yaxis: { title: { text: met.label }, zeroline: true, zerolinecolor: c.axis } }, 'confronto_per_stagione');
     }
@@ -1481,12 +1508,14 @@
         const vx = a && b ? meanOn(ck, b, 'mae') : b ? gdVal(FX, b, 'mae', 'mean') : null;
         rows.push({ cfg: `TH${th}-TL${tl}-${ce}`, n: a && b ? ck.length : null, endo: vn, exo: vx, d: a && b ? vn - vx : null,
           pers: a && b ? meanOn(ck, a, 'mae', true) : null, skn: a && b ? meanOn(ck, a, 'skill') : null, skx: a && b ? meanOn(ck, b, 'skill') : null,
+          ssn: a && b ? meanOn(ck, a, 'ss') : null, ssx: a && b ? meanOn(ck, b, 'ss') : null,
           lrn: a ? a.lr : null, lrx: b ? b.lr : null, note: !a ? 'solo esogena' : !b ? 'solo endogena' : '' });
       }
       return table([{ key: 'cfg', label: 'Configurazione' }, { key: 'n', label: 'Stagioni in comune', num: true },
         { key: 'endo', label: 'MAE endogena [kW]', num: true, fmt: v => fmt(v, 2) }, { key: 'exo', label: 'MAE esogena [kW]', num: true, fmt: v => fmt(v, 2) },
         { key: 'd', label: 'Δ [kW]', num: true, render: r => signed(r.d, 2, ' kW') }, { key: 'pers', label: 'MAE persistenza', num: true, fmt: v => fmt(v, 2) },
         { key: 'skn', label: 'Endogena vs persistenza', num: true, render: r => signed(r.skn) }, { key: 'skx', label: 'Esogena vs persistenza', num: true, render: r => signed(r.skx) },
+        { key: 'ssn', label: 'Skill score endogena', num: true, render: r => signed(r.ssn) }, { key: 'ssx', label: 'Skill score esogena', num: true, render: r => signed(r.ssx) },
         { key: 'lrn', label: 'lr endo', num: true }, { key: 'lrx', label: 'lr eso', num: true }, { key: 'note', label: 'Nota' }], rows, { sortKey: 'cfg' });
     }));
 
@@ -1539,7 +1568,8 @@
       { key: 'part', label: 'Modello' }, { key: 'name', label: 'Configurazione' }, { key: 'th', label: 'Finestra (TH)' }, { key: 'tl', label: 'Orizzonte (TL)' },
       { key: 'cells', label: 'Celle / neuroni' }, { key: 'mae', label: 'MAE [kW]', num: true, fmt: v => fmt(v, 2) },
       { key: 'nmae_mean', label: 'nMAE media [%]', num: true, fmt: v => fmt(v, 1) }, { key: 'nmae_ref', label: 'nMAE rif. [%]', num: true, fmt: v => fmt(v, 2) },
-      { key: 'skill', label: 'vs persistenza', num: true, render: r => signed(r.skill) }, { key: 'r2', label: 'R²', num: true, fmt: v => fmt(v, 3) },
+      { key: 'skill', label: 'vs persistenza (MAE)', num: true, render: r => signed(r.skill) },
+      { key: 'ss', label: 'Skill score (RMSE)', num: true, render: r => signed(r.ss) }, { key: 'r2', label: 'R²', num: true, fmt: v => fmt(v, 3) },
     ], all, { scroll: true })));
   }
 
@@ -2076,6 +2106,7 @@
         h('dt', null, 'Stessa ora di ieri'), h('dd', null, 'Previsione ingenua con la misura di 24 ore prima (solo Abruzzo, dati orari). È il riferimento principale dell\'Abruzzo per ogni TL.'),
         h('dt', null, 'Misura traslata di 1 passo'), h('dd', null, 'La misura spostata in avanti di un passo (1 ora nell\'Abruzzo, 5 minuti su Generation data), disegnata nei grafici come riferimento visivo. Con TL > 1 non è una previsione realizzabile, perché quel valore non è ancora noto quando si fa la previsione: per questo non entra nelle tabelle di miglioramento.'),
         h('dt', null, 'Miglioramento'), h('dd', null, '1 − MAE rete / MAE riferimento, in %. Positivo = la rete è migliore.'),
+        h('dt', null, 'Skill score'), h('dd', null, 'Generation data: 1 − RMSE rete / RMSE persistenza, in %, calcolato sugli stessi campioni di test di ogni stagione e poi mediato sulle stagioni. È la forma più usata in letteratura per la previsione fotovoltaica: 0 = come la persistenza, positivo = la rete è migliore, 100 % = previsione perfetta. Rispetto al miglioramento sul MAE pesa di più gli errori grandi, per esempio quando la rete non segue una nuvola.'),
         h('dt', null, 'Analisi del ritardo'), h('dd', null, 'MAE tra la previsione al tempo t e la misura al tempo t − k, per vari k. Il minimo a k = 0 indica una previsione in fase; il minimo a k = TL indica che la rete ripete l\'ultimo valore noto.'),
       ))));
     const exA = abrHasData(abrPref) ? abrVal(abrPref, 'mae', 'mean') : null, exE = exoVal(exoPref, 'mae', 'mean'), rb = bestReg(usedRun());
