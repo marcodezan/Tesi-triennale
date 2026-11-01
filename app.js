@@ -325,6 +325,10 @@
   function usedRun() { return regRun(REG.used_run); }
   function bestReg(run) { return run.metrics.filter(m => m.id !== 'baseline').reduce((a, b) => (a && a.mae <= b.mae ? a : b), null); }
 
+  // skill score [%] = 1 - sum (y - yhat)^2 / sum (y - y_ref)^2. Model and reference are on the same test samples,
+  // so the ratio of the sums equals (RMSE model / RMSE reference)^2.
+  function skillScore(rmse, rmseRef) { return rmse == null || !rmseRef ? null : 100 * (1 - (rmse / rmseRef) * (rmse / rmseRef)); }
+
   // ------------------------------------------------------------------ data access: Abruzzo
   const ABR_METRICS = [
     { value: 'mae', label: 'MAE [kWh]', unit: 'kWh', d: 2, kind: 'seq' },
@@ -333,11 +337,14 @@
     { value: 'nmae_mean', label: "nMAE sull'energia media [%]", unit: '%', d: 1, kind: 'seq' },
     { value: 'skill_pers', label: 'Miglioramento vs persistenza (solo TL ≤ 3 h) [%]', unit: '%', d: 1, kind: 'div' },
     { value: 'skill_yest', label: 'Miglioramento vs stessa ora di ieri [%]', unit: '%', d: 1, kind: 'div' },
+    { value: 'ss_yest', label: 'Skill score vs stessa ora di ieri [%]', unit: '%', d: 1, kind: 'div' },
   ];
   function abrMae(s) { return s.csv ? s.csv.mae : s.file ? s.file.mae : null; }
+  function abrRmse(s) { return s.csv ? s.csv.rmse : s.file && s.file.rmse != null ? s.file.rmse : null; }
   function abrMape(s) { return s.csv ? s.csv.mape_day : s.file ? s.file.mape_day : null; }
   function abrSeasonVal(s, m, tl) {
     if (m === 'mape') return abrMape(s);
+    if (m === 'ss_yest') return skillScore(abrRmse(s), s.base.yest.rmse);
     const mae = abrMae(s); if (mae == null) return null;
     switch (m) {
       case 'mae': return mae;
@@ -374,7 +381,7 @@
     { value: 'wmape', label: 'wMAPE diurno [%]', unit: '%', d: 1 },
     { value: 'nmae_mean', label: 'nMAE sulla potenza media [%]', unit: '%', d: 1 },
     { value: 'nmae_ref', label: 'nMAE sulla potenza massima [%]', unit: '%', d: 2 },
-    { value: 'ss', label: 'Skill score vs persistenza (RMSE) [%]', unit: '%', d: 1 },
+    { value: 'ss', label: 'Skill score vs persistenza [%]', unit: '%', d: 1 },
     { value: 'skill', label: 'Miglioramento del MAE vs persistenza [%]', unit: '%', d: 1 },
     { value: 'r2', label: 'R²', unit: '', d: 3 },
   ];
@@ -384,7 +391,7 @@
       case 'mae': return x.mae; case 'mape': return x.mape_day; case 'wmape': return x.wmape_day;
       case 'nmae_mean': return 100 * x.mae / x.mean_real; case 'nmae_ref': return 100 * x.mae / P_MAX;
       case 'skill': return ofPers ? null : 100 * (1 - s.metrics.mae / s.pers.mae);
-      case 'ss': return ofPers ? null : 100 * (1 - s.metrics.rmse / s.pers.rmse);
+      case 'ss': return ofPers ? null : skillScore(s.metrics.rmse, s.pers.rmse);
       case 'r2': return x.r2;
     }
     return null;
@@ -733,7 +740,7 @@
       rows.push({ ds: DS_ABR, fam: 'abr', part: FAM_NAME.abr, key: 'abr-' + c.id, name: c.id, step: '1 h', tlh: c.tl,
         th: c.th + ' h', tl: c.tl + ' h', cells: c.cells, mae: abrVal(c, 'mae', 'mean'), unit: 'kWh',
         nmae_mean: abrVal(c, 'nmae_mean', 'mean'), nmae_ref: abrVal(c, 'nmae_nom', 'mean'),
-        skill: abrVal(c, 'skill_yest', 'mean'), r2: null, src: srcs, _hl: c.preferred });
+        skill: abrVal(c, 'skill_yest', 'mean'), ss: abrVal(c, 'ss_yest', 'mean'), r2: null, src: srcs, _hl: c.preferred });
     }
     return rows;
   }
@@ -824,7 +831,8 @@
         { key: 'mae', label: 'MAE', num: true, render: r => fmt(r.mae, 2) + ' ' + r.unit },
         { key: 'nmae_ref', label: 'nMAE rif. [%]', num: true, fmt: v => fmt(v, 2) },
         { key: 'nmae_mean', label: 'nMAE media [%]', num: true, fmt: v => fmt(v, 1) },
-        { key: 'skill', label: 'vs riferimento', num: true, render: r => signed(r.skill), title: 'Abruzzo: stessa ora di ieri; Generation data: persistenza' },
+        { key: 'skill', label: 'vs riferimento (MAE)', num: true, render: r => signed(r.skill), title: 'Abruzzo: stessa ora di ieri; Generation data: persistenza' },
+        { key: 'ss', label: 'Skill score', num: true, render: r => signed(r.ss), title: 'Abruzzo: rispetto alla stessa ora di ieri; Generation data: rispetto alla persistenza' },
         { key: 'r2', label: 'R²', num: true, fmt: v => fmt(v, 3) },
         { key: 'src', label: 'Fonte' },
       ], rows, { scroll: true })));
@@ -948,7 +956,7 @@
       const b = bestOf(ok.filter(x => x.tl === tl), x => abrVal(x, 'mae', 'mean'));
       const pf = ok.find(x => x.tl === tl && x.preferred && x !== b);
       return tile(`Previsione a ${tl} ${tl === 1 ? 'ora' : 'ore'}`, `${b.id}${b.preferred ? ' · preferita' : ' · MAE più basso'}`, fmt(abrVal(b, 'mae', 'mean'), 2), 'kWh MAE',
-        [h('span', null, 'vs stessa ora di ieri ', signed(abrVal(b, 'skill_yest', 'mean'))), fact('nMAE nominale', fmt(abrVal(b, 'nmae_nom', 'mean'), 2) + ' %'),
+        [h('span', null, 'vs stessa ora di ieri ', signed(abrVal(b, 'skill_yest', 'mean'))), h('span', null, 'skill score ', signed(abrVal(b, 'ss_yest', 'mean'))), fact('nMAE nominale', fmt(abrVal(b, 'nmae_nom', 'mean'), 2) + ' %'),
           pf ? fact('preferita', `${pf.id} (${fmt(abrVal(pf, 'mae', 'mean'), 2)} kWh)`) : null], b.preferred);
     })));
 
@@ -1027,13 +1035,15 @@
     // ranking (mean over the seasons)
     view.append(sectionTitle('Classifica delle configurazioni', null, 'Media delle 4 stagioni, ordinata per MAE. Clicca su una configurazione per aprirne il dettaglio.'));
     const rank = ABR.configs.map(x => ({ id: x.id, th: x.th, tl: x.tl, cells: x.cells, mae: abrHasData(x) ? abrVal(x, 'mae', 'mean') : null,
-      mape: abrVal(x, 'mape', 'mean'), nnom: abrVal(x, 'nmae_nom', 'mean'), sky: abrVal(x, 'skill_yest', 'mean'), skp: abrVal(x, 'skill_pers', 'mean'), _hl: x.preferred }));
+      mape: abrVal(x, 'mape', 'mean'), nnom: abrVal(x, 'nmae_nom', 'mean'), sky: abrVal(x, 'skill_yest', 'mean'), ssy: abrVal(x, 'ss_yest', 'mean'), skp: abrVal(x, 'skill_pers', 'mean'), _hl: x.preferred }));
     view.append(card('Media delle stagioni', 'La barra blu segna la configurazione preferita. Persistenza solo per TL ≤ ' + ABR_PERS_MAX_TL + ' h.', table([
       { key: 'id', label: 'Configurazione', render: r => linkBtn(r.id, () => openAbrDetail(r.id), 'Apri il dettaglio') },
       { key: 'th', label: 'TH [h]', num: true }, { key: 'tl', label: 'TL [h]', num: true }, { key: 'cells', label: 'Celle', num: true },
       { key: 'mae', label: 'MAE [kWh]', num: true, fmt: v => fmt(v, 2) }, { key: 'nnom', label: 'nMAE nom. [%]', num: true, fmt: v => fmt(v, 2) },
       { key: 'mape', label: 'MAPE diurno [%]', num: true, fmt: v => fmt(v, 1) },
-      { key: 'sky', label: 'vs ieri', num: true, render: r => signed(r.sky) }, { key: 'skp', label: 'vs persistenza', num: true, render: r => signed(r.skp) },
+      { key: 'sky', label: 'vs ieri (MAE)', num: true, render: r => signed(r.sky) },
+      { key: 'ssy', label: 'Skill score vs ieri', num: true, render: r => signed(r.ssy), title: '1 − Σ(misura − rete)² / Σ(misura − stessa ora di ieri)²' },
+      { key: 'skp', label: 'vs persistenza', num: true, render: r => signed(r.skp) },
     ], rank, { sortKey: 'mae' })));
 
     // full table
@@ -1041,7 +1051,7 @@
     for (const x of ABR.configs) for (const ss of ABR_SEASONS) {
       const e = x.seasons[ss.key];
       rows.push({ cfg: x.id, season: ss.label, n: e.base.n_test, mae: abrMae(e), mape: abrMape(e), pers: x.tl <= ABR_PERS_MAX_TL ? e.base.pers.mae : null, yest: e.base.yest.mae,
-        skp: abrSeasonVal(e, 'skill_pers', x.tl), sky: abrSeasonVal(e, 'skill_yest', x.tl), nnom: abrSeasonVal(e, 'nmae_nom', x.tl),
+        skp: abrSeasonVal(e, 'skill_pers', x.tl), sky: abrSeasonVal(e, 'skill_yest', x.tl), ssy: abrSeasonVal(e, 'ss_yest', x.tl), nnom: abrSeasonVal(e, 'nmae_nom', x.tl),
         _hl: x.preferred });
     }
     view.append(foldCard(`Tutte le stagioni di tutte le configurazioni (${rows.length} righe)`, `Metriche ricalcolate dai file Risultati_<stagione>.csv; persistenza e stessa ora di ieri sono calcolate dai dati misurati sugli stessi campioni di test.`,
@@ -1049,7 +1059,8 @@
         { key: 'cfg', label: 'Configurazione' }, { key: 'season', label: 'Stagione' }, { key: 'n', label: 'Ore test', num: true },
         { key: 'mae', label: 'MAE [kWh]', num: true, fmt: v => fmt(v, 2) }, { key: 'mape', label: 'MAPE diurno [%]', num: true, fmt: v => fmt(v, 1) },
         { key: 'pers', label: 'MAE persistenza', num: true, fmt: v => fmt(v, 2) }, { key: 'yest', label: 'MAE ieri', num: true, fmt: v => fmt(v, 2) },
-        { key: 'skp', label: 'vs persistenza', num: true, render: r => signed(r.skp) }, { key: 'sky', label: 'vs ieri', num: true, render: r => signed(r.sky) },
+        { key: 'skp', label: 'vs persistenza', num: true, render: r => signed(r.skp) }, { key: 'sky', label: 'vs ieri (MAE)', num: true, render: r => signed(r.sky) },
+        { key: 'ssy', label: 'Skill score vs ieri', num: true, render: r => signed(r.ssy) },
         { key: 'nnom', label: 'nMAE nom. [%]', num: true, fmt: v => fmt(v, 2) },
       ], rows, { scroll: true })));
   }
@@ -1087,7 +1098,7 @@
     view.append(sectionTitle(`${seasonLabel(S.abrDetSeason)} · ${cf.id}`, null, `Test dal ${s.base.t_start.slice(0, 16)} al ${s.base.t_end.slice(0, 16)}.`));
     view.append(h('div', { class: 'grid four' },
       tile('MAE della rete', `${cf.id} · ${seasonLabel(S.abrDetSeason)}`, fmt(mae, 2), 'kWh', [fact('MAPE diurno', fmt(abrMape(s), 1) + ' %')]),
-      tile('Stessa ora di ieri', 'valore di 24 ore prima (riferimento principale)', fmt(s.base.yest.mae, 2), 'kWh', [h('span', null, 'rete ', signed(abrSeasonVal(s, 'skill_yest', cf.tl)))]),
+      tile('Stessa ora di ieri', 'valore di 24 ore prima (riferimento principale)', fmt(s.base.yest.mae, 2), 'kWh', [h('span', null, 'rete ', signed(abrSeasonVal(s, 'skill_yest', cf.tl))), h('span', null, 'skill score ', signed(abrSeasonVal(s, 'ss_yest', cf.tl)))]),
       cf.tl <= ABR_PERS_MAX_TL
         ? tile('Persistenza', `ultimo valore noto (${cf.tl} h prima)`, fmt(s.base.pers.mae, 2), 'kWh', [h('span', null, 'rete ', signed(abrSeasonVal(s, 'skill_pers', cf.tl)))])
         : tile('Persistenza', `non usata con TL = ${cf.tl} h`, '—', null, [h('span', null, 'vedi Definizioni e note')]),
@@ -1270,7 +1281,7 @@
         { key: 'th', label: 'TH', num: true }, { key: 'tl', label: 'TL', num: true }, { key: 'cells', label: 'Celle', num: true },
         { key: 'mae', label: 'MAE [kW]', num: true, fmt: v => fmt(v, 2) }, { key: 'pers', label: 'MAE persistenza', num: true, fmt: v => fmt(v, 2) },
         { key: 'skill', label: 'vs persistenza (MAE)', num: true, render: r => signed(r.skill) },
-        { key: 'ss', label: 'Skill score (RMSE)', num: true, render: r => signed(r.ss), title: '1 − RMSE rete / RMSE persistenza' }, { key: 'r2', label: 'R²', num: true, fmt: v => fmt(v, 3) },
+        { key: 'ss', label: 'Skill score', num: true, render: r => signed(r.ss), title: '1 − Σ(misura − rete)² / Σ(misura − persistenza)²' }, { key: 'r2', label: 'R²', num: true, fmt: v => fmt(v, 3) },
         { key: 'mape', label: 'MAPE diurno [%]', num: true, fmt: v => fmt(v, 1) }, { key: 'wmape', label: 'wMAPE [%]', num: true, fmt: v => fmt(v, 1) },
         { key: 'lr', label: 'Learning rate', num: true }], sum, { sortKey: 'mae' })));
 
@@ -1351,7 +1362,7 @@
         { key: 'wmape', label: 'wMAPE [%]', num: true, fmt: v => fmt(v, 1) }, { key: 'pers', label: 'MAE persistenza', num: true, fmt: v => fmt(v, 2) },
         { key: 'prmse', label: 'RMSE persistenza', num: true, fmt: v => fmt(v, 2) },
         { key: 'skill', label: 'vs persistenza (MAE)', num: true, render: r => signed(r.skill) },
-        { key: 'ss', label: 'Skill score (RMSE)', num: true, render: r => signed(r.ss) }, { key: 'src', label: 'File' },
+        { key: 'ss', label: 'Skill score', num: true, render: r => signed(r.ss) }, { key: 'src', label: 'File' },
       ], rows, { scroll: true });
     }));
     view.append(foldCard('Ritardo in tutte le stagioni', 'Per ogni configurazione e stagione, lo spostamento k con l\'errore minimo (su tutto il test salvato): k = 0 vuol dire previsione in fase, k = TL che la rete si comporta come la persistenza.', () => {
@@ -1436,7 +1447,7 @@
       yaxis: { title: { text: met.label }, rangemode: isSk(met.value) ? 'normal' : 'tozero', zeroline: isSk(met.value), zerolinecolor: c.axis } }, 'confronto_orizzonte');
 
     // --- skill score against persistence, by horizon
-    view.append(sectionTitle('Skill score rispetto alla persistenza', 'skill', 'Lo skill score misura quanto una rete fa meglio della persistenza sugli stessi campioni: 0 = come la persistenza, valori positivi = meglio. Toglie l\'effetto della difficoltà della stagione e dell\'orizzonte, quindi permette di confrontare l\'esogena e l\'endogena in modo più corretto del solo errore in kW.'));
+    view.append(sectionTitle('Skill score rispetto alla persistenza', 'skill', 'Skill score = 1 − Σ(misura − rete)² / Σ(misura − persistenza)², sugli stessi campioni di test: 0 = come la persistenza, valori positivi = meglio, 100 % = previsione perfetta. Toglie l\'effetto della difficoltà della stagione e dell\'orizzonte, quindi permette di confrontare l\'esogena e l\'endogena in modo più corretto del solo errore in kW.'));
     const ssAt = (F, tl) => bestOf(F.configs.filter(x => x.tl === tl), cf => gdVal(F, cf, 'ss', 'mean'), true);
     const ssRows = tlsAll.map((t, i) => {
       const a = ssAt(FX, t), b = ssAt(FN, t);
@@ -1444,10 +1455,10 @@
         endoId: b ? b.id : '—', endo: b ? gdVal(FN, b, 'ss', 'mean') : null, endoMae: b ? gdVal(FN, b, 'skill', 'mean') : null };
     });
     const ssd = chartDiv('short');
-    view.append(card('Skill score (RMSE) per orizzonte', 'Per ogni orizzonte, la configurazione di ciascuna rete con lo skill score medio più alto (media sulle stagioni). Passa il mouse su una barra per leggere la configurazione.',
+    view.append(card('Skill score per orizzonte', 'Per ogni orizzonte, la configurazione di ciascuna rete con lo skill score medio più alto (media sulle stagioni). Passa il mouse su una barra per leggere la configurazione.',
       [ssd, tableToggle('Mostra i valori in tabella', table([{ key: 'tl', label: 'Orizzonte' },
-        { key: 'exoId', label: 'Esogena' }, { key: 'exo', label: 'Skill score (RMSE)', num: true, render: r => signed(r.exo) }, { key: 'exoMae', label: 'vs persistenza (MAE)', num: true, render: r => signed(r.exoMae) },
-        { key: 'endoId', label: 'Endogena' }, { key: 'endo', label: 'Skill score (RMSE)', num: true, render: r => signed(r.endo) }, { key: 'endoMae', label: 'vs persistenza (MAE)', num: true, render: r => signed(r.endoMae) }], ssRows))]));
+        { key: 'exoId', label: 'Esogena' }, { key: 'exo', label: 'Skill score', num: true, render: r => signed(r.exo) }, { key: 'exoMae', label: 'vs persistenza (MAE)', num: true, render: r => signed(r.exoMae) },
+        { key: 'endoId', label: 'Endogena' }, { key: 'endo', label: 'Skill score', num: true, render: r => signed(r.endo) }, { key: 'endoMae', label: 'vs persistenza (MAE)', num: true, render: r => signed(r.endoMae) }], ssRows))]));
     plot(ssd, [['exo', 'exoId', 'LSTM esogena', c.s1], ['endo', 'endoId', 'LSTM endogena', c.s2]].map(([k, idk, name, col]) => ({ type: 'bar', name, x: xl,
       y: ssRows.map(r => r[k]), customdata: ssRows.map(r => r[idk]), marker: { color: col },
       hovertemplate: `${name} · %{customdata}<br><b>%{y:+.1f} %</b><extra></extra>` })),
@@ -1569,7 +1580,7 @@
       { key: 'cells', label: 'Celle / neuroni' }, { key: 'mae', label: 'MAE [kW]', num: true, fmt: v => fmt(v, 2) },
       { key: 'nmae_mean', label: 'nMAE media [%]', num: true, fmt: v => fmt(v, 1) }, { key: 'nmae_ref', label: 'nMAE rif. [%]', num: true, fmt: v => fmt(v, 2) },
       { key: 'skill', label: 'vs persistenza (MAE)', num: true, render: r => signed(r.skill) },
-      { key: 'ss', label: 'Skill score (RMSE)', num: true, render: r => signed(r.ss) }, { key: 'r2', label: 'R²', num: true, fmt: v => fmt(v, 3) },
+      { key: 'ss', label: 'Skill score', num: true, render: r => signed(r.ss) }, { key: 'r2', label: 'R²', num: true, fmt: v => fmt(v, 3) },
     ], all, { scroll: true })));
   }
 
@@ -2098,7 +2109,10 @@
       h('dl', { class: 'defs' },
         h('dt', null, 'MAE'), h('dd', null, 'Errore assoluto medio: media di |previsto − misurato| su tutti i campioni di test (kW, o kWh per ora nell\'Abruzzo).'),
         h('dt', null, 'RMSE'), h('dd', null, 'Radice dell\'errore quadratico medio: pesa di più gli errori grandi.'),
-        h('dt', null, 'R²'), h('dd', null, '1 − (somma degli errori al quadrato) / (somma degli scarti della misura dalla sua media). 1 = perfetto, 0 = come prevedere sempre la media.'),
+        h('dt', null, 'R²'), h('dd', null, '1 − (somma degli errori al quadrato) / (somma degli scarti della misura dalla sua media). 1 = perfetto, 0 = come prevedere sempre la media. Il confronto con la media è facile da battere: per questo le reti sono giudicate soprattutto con lo skill score (sotto).'),
+        h('dt', null, 'Skill score'), h('dd', null,
+          h('div', { class: 'formula' }, 'SS = 1 − Σ (yᵢ − ŷᵢ)² / Σ (yᵢ − y_rif,ᵢ)²'),
+          h('div', null, 'yᵢ = misura, ŷᵢ = previsione della rete, y_rif,ᵢ = previsione del riferimento ingenuo, sugli stessi campioni di test; il risultato è in %. Ha la stessa forma dell\'R², ma al posto della media c\'è un vero rivale: la persistenza (ultimo valore noto) per Generation data, la stessa ora del giorno prima per l\'Abruzzo. SS = 0: la rete fa come il riferimento; SS > 0: fa meglio; SS = 100 %: previsione perfetta; SS < 0: fa peggio. Calcolato stagione per stagione e poi mediato sulle stagioni.')),
         h('dt', null, 'nMAE'), h('dd', null, 'MAE diviso una potenza di riferimento, in %: la potenza nominale (995,67 kWp per l\'Abruzzo), la potenza massima misurata (Generation data, nominale non nota) oppure la potenza media misurata nel test. Spiegazione completa più sotto.'),
         h('dt', null, 'MAPE diurno'), h('dd', null, 'Errore percentuale medio solo sui campioni "diurni": misura > 10 kWh nell\'Abruzzo, > 5 % del massimo della stagione nell\'esogena (come negli script).'),
         h('dt', null, 'wMAPE diurno'), h('dd', null, 'Somma degli errori assoluti diviso somma delle misure, sugli stessi campioni diurni: meno sensibile ai valori piccoli.'),
@@ -2106,7 +2120,6 @@
         h('dt', null, 'Stessa ora di ieri'), h('dd', null, 'Previsione ingenua con la misura di 24 ore prima (solo Abruzzo, dati orari). È il riferimento principale dell\'Abruzzo per ogni TL.'),
         h('dt', null, 'Misura traslata di 1 passo'), h('dd', null, 'La misura spostata in avanti di un passo (1 ora nell\'Abruzzo, 5 minuti su Generation data), disegnata nei grafici come riferimento visivo. Con TL > 1 non è una previsione realizzabile, perché quel valore non è ancora noto quando si fa la previsione: per questo non entra nelle tabelle di miglioramento.'),
         h('dt', null, 'Miglioramento'), h('dd', null, '1 − MAE rete / MAE riferimento, in %. Positivo = la rete è migliore.'),
-        h('dt', null, 'Skill score'), h('dd', null, 'Generation data: 1 − RMSE rete / RMSE persistenza, in %, calcolato sugli stessi campioni di test di ogni stagione e poi mediato sulle stagioni. È la forma più usata in letteratura per la previsione fotovoltaica: 0 = come la persistenza, positivo = la rete è migliore, 100 % = previsione perfetta. Rispetto al miglioramento sul MAE pesa di più gli errori grandi, per esempio quando la rete non segue una nuvola.'),
         h('dt', null, 'Analisi del ritardo'), h('dd', null, 'MAE tra la previsione al tempo t e la misura al tempo t − k, per vari k. Il minimo a k = 0 indica una previsione in fase; il minimo a k = TL indica che la rete ripete l\'ultimo valore noto.'),
       ))));
     const exA = abrHasData(abrPref) ? abrVal(abrPref, 'mae', 'mean') : null, exE = exoVal(exoPref, 'mae', 'mean'), rb = bestReg(usedRun());
