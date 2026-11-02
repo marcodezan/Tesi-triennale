@@ -49,7 +49,7 @@
   const abrPref = ABR.configs.find(c => c.preferred) || ABR.configs[0];
   const exoPref = EXO.configs.find(c => c.preferred) || EXO.configs[0];
   // Generation_data families: exogenous / endogenous, single seasons / joined years (1 + 2 -> 3)
-  const EMPTY_FAM = { configs: [], seasons: [], lstmvis: [], pending: [] };
+  const EMPTY_FAM = { configs: [], seasons: [], pending: [] };
   const ENDO = D.endo_gd || EMPTY_FAM, EXOJ = D.exo_joined || EMPTY_FAM, ENDOJ = D.endo_joined || EMPTY_FAM;
   const GD = { exo: EXO, endo: ENDO, exoJ: EXOJ, endoJ: ENDOJ };
   const GD_TAG = { exo: 'ESO', endo: 'END', exoJ: 'ESO anni', endoJ: 'END anni' };
@@ -105,9 +105,8 @@
     ovMetric: 'nmae_prod', ovBaseline: false,
     regRun: REG.used_run, regModel: 'single_neuron', regBins: 'bias',
     abrMetric: 'mae', abrSeason: 'mean', abrConfig: abrPref.id, abrDetSeason: 'Primavera2021',
-    abrPers: true, abrYest: false, abrVis: ABR.lstmvis.length ? ABR.lstmvis.find(v => v.units === 36)?.config || ABR.lstmvis[0].config : null,
+    abrPers: true, abrYest: false,
     exoMetric: 'mae', exoConfig: exoPref.id, exoSeason: 'Estate_3', exoAxis: 'samples', exoPers: true,
-    exoVis: EXO.lstmvis.length ? exoPref.id : null,
     expModel: ABR.configs.some(c => ABR_SEASONS.some(s => c.seasons[s.key].csv)) ? 'abr' : 'exo',
     gdMetric: 'mae', gdSamples: 'last20', gdAxis: 'samples', gdPers: true, gdCells: 64,
     cmpMode: 'sep', cmpMetric: 'mae', cmpCells: 64, cmpSeason: 'mean',
@@ -124,8 +123,6 @@
   if (!ABR_SEASONS.some(s => s.key === S.abrDetSeason)) S.abrDetSeason = ABR_SEASONS[0].key;
   if (!EXO.configs.some(c => c.id === S.exoConfig)) S.exoConfig = DEFAULTS.exoConfig;
   if (!EXO_SEASONS.some(s => s.key === S.exoSeason)) S.exoSeason = EXO_SEASONS[0].key;
-  if (!ABR.lstmvis.some(v => v.config === S.abrVis)) S.abrVis = DEFAULTS.abrVis;
-  if (!EXO.lstmvis.some(v => v.config === S.exoVis)) S.exoVis = DEFAULTS.exoVis;
   if (!ABR_SEASONS.some(s => s.key === S.expSeasonAbr)) S.expSeasonAbr = DEFAULTS.expSeasonAbr;
   if (!EXO_SEASONS.some(s => s.key === S.expSeasonExo)) S.expSeasonExo = DEFAULTS.expSeasonExo;
   for (const k of ['expCfgsAbr', 'expCfgsExo']) if (!Array.isArray(S[k])) S[k] = DEFAULTS[k].slice();
@@ -1180,38 +1177,6 @@
       lagCard.querySelector('.card-head > div').append(h('p', { class: 'desc' },
         `MAE tra la previsione e la misura spostata di k ore. Se il minimo è a k = TL, la rete ripete l'ultimo valore noto. Qui il minimo è a k = ${k}.`));
     }
-
-    lstmvisSection(ABR.lstmvis, 'abrVis', 'Stati interni della rete (LSTMVis)', 'Stati nascosti esportati per l\'ultima stagione elaborata (Estate 2021), proiettati sulle prime due componenti principali e colorati con l\'etichetta usata in LSTMVis (decile dell\'energia reale; P_00% contiene le ore a produzione nulla).');
-  }
-
-  // ------------------------------------------------------------------ LSTMVis section (shared)
-  function lstmvisSection(list, key, title, desc) {
-    if (!list.length) return;
-    const c = C();
-    const v = list.find(x => x.config === S[key]) || list[0];
-    view.append(sectionTitle(title));
-    view.append(filters(selectCtl('Esportazione', list.map(x => ({ value: x.config, label: `${x.config} · ${x.season} · ${x.units} unità` })), v.config, val => set(key, val))));
-    const g = h('div', { class: 'grid two' }); view.append(g);
-    const d1 = chartDiv('square');
-    g.append(card(`Componenti principali · ${v.config}`, desc, d1));
-    const tr = [{ type: v.n > 1500 ? 'scattergl' : 'scatter', mode: 'markers', name: 'Stati', x: v.pc1, y: v.pc2,
-      customdata: v.decile.map(d => `P_${String(d * 10).padStart(2, '0')}%`),
-      marker: { size: v.n > 1500 ? 6 : 8, color: v.decile.map(d => d * 10), cmin: 0, cmax: 90, colorscale: toScale(c.ord),
-        line: { color: c.surface, width: v.n > 1500 ? 0.5 : 1.5 },
-        colorbar: { title: { text: 'Decile [%]', font: { color: c.text2, size: 11 } }, thickness: 10, outlinewidth: 0, tickvals: [0, 30, 60, 90], tickfont: { color: c.muted, size: 11 } } },
-      hovertemplate: '%{customdata}<br>PC1 %{x:.2f} · PC2 %{y:.2f}<extra></extra>' }];
-    plot(d1, tr, { showlegend: false, margin: { t: 16 }, xaxis: { title: { text: `PC1 (${fmt(v.evr[0], 1)} % della varianza)` }, zeroline: false },
-      yaxis: { title: { text: `PC2 (${fmt(v.evr[1], 1)} % della varianza)` } } }, 'lstmvis_pca');
-    const d2 = chartDiv('short');
-    const right = h('div', null, d2,
-      h('p', { class: 'note' }, `${fmt(v.n, 0)} campioni × ${v.units} unità · stati tra ${fmt(v.state_min, 3)} e ${fmt(v.state_max, 3)} (media ${fmt(v.state_mean, 3)}) · correlazione PC1–decile ${fmt(v.pc1_corr_decile, 2)} · file ${v.file}`),
-      h('p', { class: 'section-title' }, 'Unità più correlate con il decile di energia'),
-      table([{ key: 'unit', label: 'Unità (da 0)', num: true }, { key: 'corr', label: 'Correlazione', num: true, fmt: x => fmtS(x, 2) }], v.top_units, { sortKey: null }));
-    g.append(card('Varianza spiegata', 'Quota di varianza degli stati spiegata dalle prime cinque componenti.', right));
-    plot(d2, [{ type: 'bar', x: v.evr.map((_, i) => 'PC' + (i + 1)), y: v.evr, marker: { color: c.s1 }, width: 0.5,
-      text: v.evr.map(x => fmt(x, 1) + ' %'), textposition: 'outside', cliponaxis: false, textfont: { color: c.text2 },
-      hovertemplate: '%{x}<br><b>%{y:.1f} %</b><extra></extra>' }],
-    { showlegend: false, margin: { t: 20 }, yaxis: { title: { text: 'Varianza spiegata [%]' }, rangemode: 'tozero' } }, 'lstmvis_varianza');
   }
 
   // ================================================================== Generation_data: shared pieces
@@ -1421,8 +1386,6 @@
         { key: 'k', label: 'k con MAE minimo', num: true }, { key: 'm0', label: 'MAE a k = 0 [kW]', num: true, fmt: v => fmt(v, 2) },
         { key: 'mk', label: 'MAE minimo [kW]', num: true, fmt: v => fmt(v, 2) }], lagRows, { scroll: true });
     }));
-
-    lstmvisSection(F.lstmvis, 'gdVis_' + fk, 'Stati interni della rete (LSTMVis)', 'Stati nascosti esportati per l\'ultima stagione elaborata (Estate_3), proiettati sulle prime due componenti principali e colorati con il decile della potenza reale.');
   }
 
   // ================================================================== VIEW: Generation_data, all models compared
@@ -2241,7 +2204,6 @@
       h('li', null, h('code', null, 'Generation data/LSTM_ESOGENA/Reti_stagioni_separate/Grafici_*/Risultati_*.csv'), ' e ', h('code', null, 'Generation data/LSTM_ENDOGENA/Reti_con_stagioni_separate/Grafici_*/Risultati_*.csv')),
       h('li', null, h('code', null, 'Generation data/LSTM_ESOGENA/Reti_stagioni_unite/Grafici_ANNI_*/Risultati_*.csv'), ' e ', h('code', null, 'Generation data/LSTM_ENDOGENA/Reti_con_stagioni_unite/Grafici_ANNI_*/Risultati_*.csv')),
       h('li', null, h('code', null, 'Generation data/Generation_data_stagioni_vento_corretto.xlsx'), ' (serie misurate, persistenza)'),
-      h('li', null, 'File FV_*.hdf5 / FV_*.dict per gli stati LSTMVis.'),
     ))));
   }
 
