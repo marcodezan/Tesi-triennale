@@ -759,6 +759,9 @@
     syncTopbar();
     (r.sub || r.tab).render();
     applyTexts(view);
+    // side-by-side cards share one height, and some descriptions are added after their chart is drawn:
+    // fit those charts to their final box once the page is complete
+    setTimeout(() => { for (const d of view.querySelectorAll('.grid > .card > .chart.js-plotly-plot')) { try { Plotly.Plots.resize(d); } catch (e) { /* ignore */ } } }, 0);
     lastTab = r.path;
     window.scrollTo(0, y);
     if (!keepScroll) { revealActive(tabsEl, tabsEl.querySelector('[aria-current="page"]')); revealActive(subEl, subEl.querySelector('[aria-current="page"]')); }
@@ -1271,7 +1274,9 @@
       const tr = ABR_SEASONS.map((s, i) => lineT(xs, cfgs.map(cf => cf ? abrSeasonVal(cf.seasons[s.key], met.value, cf.tl) : null), s.label, c[['s1', 's2', 's3', 's4'][i]],
         { mode: 'lines+markers', marker: { size: 8, color: c[['s1', 's2', 's3', 's4'][i]], line: { color: c.surface, width: 2 } } }));
       tr.push(lineT(xs, cfgs.map(cf => cf ? abrVal(cf, met.value, 'mean') : null), 'Media', c.text1, { mode: 'lines+markers', line: { color: c.text1, width: 2.5 }, marker: { size: 9, color: c.text1, line: { color: c.surface, width: 2 } } }));
-      plot(div, tr, { hovermode: 'x unified', xaxis: { title: { text: xTitle }, type: 'category' }, yaxis: { title: { text: met.label } } }, name);
+      // legend under the chart: with five entries it takes two rows and would sit under the toolbar at the top
+      plot(div, tr, { hovermode: 'x unified', legend: { y: -0.22, yanchor: 'top' }, margin: { t: 16 },
+        xaxis: { title: { text: xTitle }, type: 'category' }, yaxis: { title: { text: met.label } } }, name);
     }
     const dc = chartDiv('short'), dt = chartDiv('short');
     g2.append(card(`Effetto del numero di celle (TH = ${cellTh} h, TL = 1 h)`, `Stessa rete con 12, 24, 36 e 128 unità nascoste · ${met.label}.`,

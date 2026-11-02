@@ -199,6 +199,9 @@ select {
 }
 .card + .card { margin-top: 16px; }
 .grid > .card + .card { margin-top: 0; }
+/* cards side by side have the same height: a chart takes the room left by a taller neighbour */
+.grid > .card { display: flex; flex-direction: column; }
+.grid > .card > .chart { flex: 1 0 auto; }
 .grid + .card, .card + .grid, .grid + .grid, .grid + .filters, .card + .filters, .grid + .callout, .callout + .grid { margin-top: 16px; }
 .card-foot { margin-top: 14px; }
 .dataset-card { display: flex; flex-direction: column; }
