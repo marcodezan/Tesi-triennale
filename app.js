@@ -1258,9 +1258,12 @@
     }
 
     // cells & short horizons
-    view.append(sectionTitle('Numero di celle e orizzonti brevi (TH = 72 h)', null, 'Quanto conta la dimensione della rete, e quanto peggiora la previsione da 1 a 3 ore.'));
+    view.append(sectionTitle('Numero di celle e orizzonti brevi', null, 'Quanto conta la dimensione della rete (con finestra di 24, 48 o 72 ore), e quanto peggiora la previsione da 1 a 3 ore (TH = 72 h).'));
     const g2 = h('div', { class: 'grid two' }); view.append(g2);
-    const cellSet = [12, 24, 36, 128].map(n => ABR.configs.find(x => x.th === 72 && x.tl === 1 && x.cells === n));
+    // windows that have the 12/24/36/128-cell family at TL = 1 h
+    const cellThs = [24, 48, 72].filter(th => [12, 24, 36].some(n => ABR.configs.some(x => x.th === th && x.tl === 1 && x.cells === n && abrHasData(x))));
+    const cellTh = cellThs.includes(Number(S.abrCellsTh)) ? Number(S.abrCellsTh) : (cellThs.includes(72) ? 72 : cellThs[0] || 72);
+    const cellSet = [12, 24, 36, 128].map(n => ABR.configs.find(x => x.th === cellTh && x.tl === 1 && x.cells === n));
     const tlSet = [1, 2, 3].map(t => ABR.configs.find(x => x.th === 72 && x.tl === t && x.cells === 36));
     function seriesBySeason(div, cfgs, xs, xTitle, name) {
       const have = cfgs.filter(Boolean).filter(cf => ABR_SEASONS.some(s => abrSeasonVal(cf.seasons[s.key], met.value, cf.tl) != null));
@@ -1271,9 +1274,10 @@
       plot(div, tr, { hovermode: 'x unified', xaxis: { title: { text: xTitle }, type: 'category' }, yaxis: { title: { text: met.label } } }, name);
     }
     const dc = chartDiv('short'), dt = chartDiv('short');
-    g2.append(card('Effetto del numero di celle (TL = 1 h)', `Stessa rete con 12, 24, 36 e 128 unità nascoste · ${met.label}.`, dc));
+    g2.append(card(`Effetto del numero di celle (TH = ${cellTh} h, TL = 1 h)`, `Stessa rete con 12, 24, 36 e 128 unità nascoste · ${met.label}.`,
+      [cellThs.length > 1 ? h('div', { class: 'inline-ctl' }, segCtl('Finestra TH', cellThs.map(t => ({ value: t, label: t + ' h' })), cellTh, v => set('abrCellsTh', v))) : null, dc]));
     g2.append(card('Orizzonti di 1, 2 e 3 ore (36 celle)', `Quanto peggiora la previsione allontanando il bersaglio · ${met.label}.`, dt));
-    seriesBySeason(dc, cellSet, ['12', '24', '36', '128'], 'Celle LSTM', 'abruzzo_celle');
+    seriesBySeason(dc, cellSet, ['12', '24', '36', '128'], 'Celle LSTM', `abruzzo_celle_TH${cellTh}`);
     seriesBySeason(dt, tlSet, ['1 h', '2 h', '3 h'], 'Orizzonte TL', 'abruzzo_orizzonti_brevi');
 
     // ranking (mean over the seasons)
