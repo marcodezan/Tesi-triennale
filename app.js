@@ -1280,6 +1280,28 @@
     seriesBySeason(dc, cellSet, ['12', '24', '36', '128'], 'Celle LSTM', `abruzzo_celle_TH${cellTh}`);
     seriesBySeason(dt, tlSet, ['1 h', '2 h', '3 h'], 'Orizzonte TL', 'abruzzo_orizzonti_brevi');
 
+    // input window TH: the chosen metric for TH = 24, 48, 72 h, at equal cells and horizon
+    const THS = [24, 48, 72];
+    const thMode = S.abrThMode === 'tl' ? 'tl' : 'cells';
+    view.append(sectionTitle('Finestra di ingresso (TH)', null, 'Come cambia la metrica scelta in alto allungando la finestra da 24 a 72 ore, a parità di celle e di orizzonte.'));
+    const thGroups = thMode === 'cells'
+      ? [128, 36, 24, 12].map((n, i) => ({ name: `${n} celle`, col: ['s1', 's2', 's3', 's4'][i], cfgs: THS.map(th => ABR.configs.find(x => x.th === th && x.tl === 1 && x.cells === n)) }))
+      : [1, 12, 24].map((tl, i) => ({ name: `TL = ${tl} h`, col: ['s1', 's2', 's3'][i], cfgs: THS.map(th => ABR.configs.find(x => x.th === th && x.tl === tl && x.cells === 128)) }));
+    const thVal = cf => cf ? abrVal(cf, met.value, S.abrSeason) : null;
+    const dth = chartDiv('');
+    const thRows = THS.map((th, j) => Object.assign({ th: th + ' h' }, Object.fromEntries(thGroups.map((g, i) => ['g' + i, thVal(g.cfgs[j])]))));
+    view.append(card(`${met.label} al variare di TH`,
+      (thMode === 'cells' ? 'Orizzonte TL = 1 h, una linea per numero di celle.' : '128 celle, una linea per orizzonte di previsione.') + ' ' +
+      (S.abrSeason === 'mean' ? 'Media delle quattro stagioni pesata con i giorni.' : seasonLabel(S.abrSeason) + '.') + (met.kind === 'div' ? ' Sopra zero = la rete fa meglio del riferimento.' : ' L\'asse verticale non parte da zero: guarda i valori, non solo la pendenza.'),
+      [h('div', { class: 'inline-ctl' }, segCtl('Linee', [{ value: 'cells', label: 'Celle (TL = 1 h)' }, { value: 'tl', label: 'Orizzonte (128 celle)' }], thMode, v => set('abrThMode', v))),
+        dth, tableToggle('Mostra i valori in tabella', table([{ key: 'th', label: 'Finestra TH' }].concat(thGroups.map((g, i) => ({ key: 'g' + i, label: g.name, num: true, fmt: v => fmt(v, met.d) }))), thRows))]));
+    if (!thGroups.some(g => g.cfgs.filter(cf => thVal(cf) != null).length >= 2)) dth.replaceWith(emptyBox('Metrica non disponibile per questo confronto.', met.value === 'skill_pers' ? `La persistenza è usata solo per TL ≤ ${ABR_PERS_MAX_TL} h.` : ''));
+    else plot(dth, thGroups.map(g => lineT(THS.map(t => t + ' h'), g.cfgs.map(thVal), g.name, c[g.col], {
+      mode: 'lines+markers', line: { color: c[g.col], width: 2.5 }, marker: { size: 9, color: c[g.col], line: { color: c.surface, width: 2 } },
+      customdata: g.cfgs.map(cf => cf ? cf.id : '—'), hovertemplate: `${g.name} · %{customdata}<br><b>%{y:.${met.d}f} ${met.unit}</b><extra></extra>` })),
+    { hovermode: 'x unified', xaxis: { title: { text: 'Finestra di ingresso TH' }, type: 'category' },
+      yaxis: { title: { text: met.label }, zeroline: met.kind === 'div', zerolinecolor: c.text2 } }, `abruzzo_finestra_TH_${thMode}`);
+
     // ranking (mean over the seasons)
     view.append(sectionTitle('Classifica delle configurazioni', null, 'Media delle 4 stagioni, ordinata per MAE. Clicca su una configurazione per aprirne il dettaglio.'));
     const rank = ABR.configs.map(x => ({ id: x.id, th: x.th, tl: x.tl, cells: x.cells, mae: abrHasData(x) ? abrVal(x, 'mae', 'mean') : null,
