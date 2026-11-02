@@ -719,8 +719,7 @@
   function go(path) { if (location.hash === '#' + path) render(false); else location.hash = path; }
   const tabsEl = document.getElementById('tabs'), subEl = document.getElementById('subtabs'), subBar = document.getElementById('subbar');
   for (const t of TABS) tabsEl.append(h('button', { class: 'tab', type: 'button', 'data-id': t.id, onclick: () => go(tabPath(t)) }, t.label));
-  document.getElementById('build-info').textContent =
-    `Dati generati il ${D.build.time}` + (D.build.commit ? ` · commit ${D.build.commit}` : '') + ' · tutti i numeri vengono dai file dei modelli';
+  document.getElementById('build-info').textContent = 'Tutti i numeri vengono dai file dei modelli';
   if (!D.public && D.build.material_uncommitted > 0) {
     const chip = document.getElementById('material-chip');
     chip.hidden = false;
