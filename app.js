@@ -40,7 +40,11 @@
     set(k, v) { try { localStorage.setItem('fvdash.' + k, JSON.stringify(v)); } catch (e) { /* private mode */ } },
   };
   const REG = D.regression, ABR = D.abruzzo, EXO = D.exogenous;
-  const P_NOM = ABR.p_nom, P_MAX = EXO.p_max;
+  const P_NOM = ABR.p_nom, P_MAX = EXO.p_max, P_NOM_GD = EXO.p_nom;
+  // season facts (days, rows, mean power) used by the day-weighted means and by the normalised MAE
+  const GD_SHEET = Object.fromEntries(EXO.seasons.map(s => [s.key, s]));
+  const ABR_SINFO = Object.fromEntries(ABR.seasons.map(s => [s.key, s]));
+  for (const c of ABR.configs) for (const [k, e] of Object.entries(c.seasons)) e._key = k;
   const ABR_SEASONS = ABR.seasons, EXO_SEASONS = EXO.seasons;
   const abrPref = ABR.configs.find(c => c.preferred) || ABR.configs[0];
   const exoPref = EXO.configs.find(c => c.preferred) || EXO.configs[0];
@@ -53,12 +57,25 @@
   // a season entry as seen with the chosen test samples (joined nets: whole year 3, or the same samples as the single-season nets)
   function gdView(s, samples) {
     if (!s) return null;
-    if (s.m20 && (samples || S.gdSamples) === 'last20') return { metrics: s.m20, pers: s.p20, shift1: s.s20, n_test: s.n_last20 };
+    if (s.m20 && (samples || S.gdSamples) === 'last20') return { metrics: s.m20, pers: s.p20, shift1: s.s20, n_test: s.n_last20, _sheet: s._sheet };
     return s;
+  }
+  // value over several sheets: mean weighted by the days of each season; the nMAE is the weighted MAE divided by the
+  // mean power of all those sheets together (e.g. the whole year 3, or the whole dataset)
+  function gdAgg(keys, entryOf, m, ofPers) {
+    const items = keys.map(k => ({ k, s: entryOf(k) })).filter(o => o.s);
+    if (!items.length) return null;
+    const w = o => (GD_SHEET[o.k] || {}).days;
+    if (m === 'nmae') {
+      const mae = wmean(items.map(o => [exoSeasonVal(o.s, 'mae', ofPers), w(o)]));
+      const p = pooledMean(items.map(o => GD_SHEET[o.k]), 'p_mean', 'n');
+      return mae == null || !p ? null : 100 * mae / p;
+    }
+    return wmean(items.map(o => [exoSeasonVal(o.s, m, ofPers), w(o)]));
   }
   function gdVal(F, c, m, season, ofPers, samples) {
     if (season !== 'mean') { const s = gdView(c.seasons[season], samples); return s ? exoSeasonVal(s, m, ofPers) : null; }
-    return mean(F.seasons.map(s => gdView(c.seasons[s.key], samples)).filter(Boolean).map(s => exoSeasonVal(s, m, ofPers)));
+    return gdAgg(F.seasons.map(s => s.key), k => gdView(c.seasons[k], samples), m, ofPers);
   }
   function gdAll() {
     return ['exo', 'endo', 'exoJ', 'endoJ'].flatMap(fk => GD[fk].configs.map(cf => Object.assign({}, cf, { id: fk + ':' + cf.id, label: GD_TAG[fk] + ' ' + cf.id })));
@@ -66,6 +83,7 @@
   // Generation_data test series are stored compactly (first sheet row + predictions): rebuild them on first use
   const GDP = D.gd_power || {};
   for (const F of [EXO, ENDO, EXOJ, ENDOJ]) for (const cf of F.configs) for (const [sheet, e] of Object.entries(cf.seasons)) {
+    e._sheet = e.sheet || sheet;
     const c0 = e.series;
     if (!c0 || !('i0' in c0)) continue;
     let cache = null;
@@ -84,7 +102,7 @@
 
   const DEFAULTS = {
     theme: 'auto',
-    ovMetric: 'nmae_ref', ovBaseline: false,
+    ovMetric: 'nmae_prod', ovBaseline: false,
     regRun: REG.used_run, regModel: 'single_neuron', regBins: 'bias',
     abrMetric: 'mae', abrSeason: 'mean', abrConfig: abrPref.id, abrDetSeason: 'Primavera2021',
     abrPers: true, abrYest: false, abrVis: ABR.lstmvis.length ? ABR.lstmvis.find(v => v.units === 36)?.config || ABR.lstmvis[0].config : null,
@@ -162,6 +180,18 @@
     return h('span', { class: v >= 0 ? 'pos' : 'neg' }, fmtS(v, d) + suffix);
   }
   function mean(a) { const v = a.filter(x => x != null && isFinite(x)); return v.length ? v.reduce((s, x) => s + x, 0) / v.length : null; }
+  // weighted mean of [value, weight] pairs (weights = days of each season); pairs without a value are skipped
+  function wmean(pairs) {
+    let s = 0, w = 0;
+    for (const [v, k] of pairs) { if (v == null || !isFinite(v) || !(k > 0)) continue; s += v * k; w += k; }
+    return w ? s / w : null;
+  }
+  // mean power of several sheets taken together (each sheet's mean weighted by its number of samples)
+  function pooledMean(infos, key, nKey) {
+    let s = 0, n = 0;
+    for (const x of infos) { if (!x || x[key] == null || !x[nKey]) continue; s += x[key] * x[nKey]; n += x[nKey]; }
+    return n ? s / n : null;
+  }
 
   // ------------------------------------------------------------------ controls & layout pieces
   function selectCtl(label, options, value, onchange) {
@@ -323,6 +353,8 @@
   // ------------------------------------------------------------------ data access: regression
   function regRun(name) { return REG.runs.find(r => r.name === name) || REG.runs[0]; }
   function usedRun() { return regRun(REG.used_run); }
+  // regression: random test samples over the whole dataset -> MAE / mean power of the whole dataset (Dati_completi)
+  function regNmae(m) { return m && m.mae != null && REG.p_mean ? 100 * m.mae / REG.p_mean : null; }
   function bestReg(run) { return run.metrics.filter(m => m.id !== 'baseline').reduce((a, b) => (a && a.mae <= b.mae ? a : b), null); }
 
   // skill score [%] = 1 - sum (y - yhat)^2 / sum (y - y_ref)^2. Model and reference are on the same test samples,
@@ -333,8 +365,8 @@
   const ABR_METRICS = [
     { value: 'mae', label: 'MAE [kWh]', unit: 'kWh', d: 2, kind: 'seq' },
     { value: 'mape', label: 'MAPE diurno [%]', unit: '%', d: 1, kind: 'seq' },
-    { value: 'nmae_nom', label: 'nMAE sulla potenza nominale [%]', unit: '%', d: 2, kind: 'seq' },
-    { value: 'nmae_mean', label: "nMAE sull'energia media [%]", unit: '%', d: 1, kind: 'seq' },
+    { value: 'nmae', label: 'nMAE sulla potenza media, tutte le ore [%]', unit: '%', d: 1, kind: 'seq' },
+    { value: 'nmae_prod', label: 'nMAE sulla potenza media, ore di produzione [%]', unit: '%', d: 1, kind: 'seq' },
     { value: 'skill_pers', label: 'Miglioramento vs persistenza (solo TL ≤ 3 h) [%]', unit: '%', d: 1, kind: 'div' },
     { value: 'skill_yest', label: 'Miglioramento vs stessa ora di ieri [%]', unit: '%', d: 1, kind: 'div' },
     { value: 'ss_yest', label: 'Skill score vs stessa ora di ieri [%]', unit: '%', d: 1, kind: 'div' },
@@ -346,10 +378,11 @@
     if (m === 'mape') return abrMape(s);
     if (m === 'ss_yest') return skillScore(abrRmse(s), s.base.yest.rmse);
     const mae = abrMae(s); if (mae == null) return null;
+    const si = ABR_SINFO[s._key] || {};
     switch (m) {
       case 'mae': return mae;
-      case 'nmae_nom': return 100 * mae / P_NOM;
-      case 'nmae_mean': return 100 * mae / s.base.mean_real;
+      case 'nmae': return 100 * mae / si.p_mean;
+      case 'nmae_prod': return 100 * mae / si.p_mean_prod;
       case 'skill_pers': return tl > ABR_PERS_MAX_TL ? null : 100 * (1 - mae / s.base.pers.mae);
       case 'skill_yest': return 100 * (1 - mae / s.base.yest.mae);
     }
@@ -359,14 +392,24 @@
     const b = s.base[which];
     switch (m) {
       case 'mae': return b.mae; case 'mape': return b.mape_day;
-      case 'nmae_nom': return 100 * b.mae / P_NOM; case 'nmae_mean': return 100 * b.mae / s.base.mean_real;
+      case 'nmae': return 100 * b.mae / (ABR_SINFO[s._key] || {}).p_mean;
+      case 'nmae_prod': return 100 * b.mae / (ABR_SINFO[s._key] || {}).p_mean_prod;
     }
     return null;
   }
+  // mean of the 4 seasons, weighted by their days; the nMAE is the weighted MAE divided by the mean power of the
+  // 4 season sheets together (all hours, or production hours only)
   function abrVal(c, m, season) {
     if (season !== 'mean') return abrSeasonVal(c.seasons[season], m, c.tl);
+    const days = s => (ABR_SINFO[s.key] || {}).days;
+    if (m === 'nmae' || m === 'nmae_prod') {
+      const v = ABR_SEASONS.map(s => abrMae(c.seasons[s.key]));
+      if (v.some(x => x == null)) return null;
+      const p = m === 'nmae' ? pooledMean(ABR.seasons, 'p_mean', 'n_valid') : pooledMean(ABR.seasons, 'p_mean_prod', 'n_prod');
+      return 100 * wmean(ABR_SEASONS.map((s, i) => [v[i], days(s)])) / p;
+    }
     const v = ABR_SEASONS.map(s => abrSeasonVal(c.seasons[s.key], m, c.tl));
-    return v.some(x => x == null) ? null : mean(v);
+    return v.some(x => x == null) ? null : wmean(ABR_SEASONS.map((s, i) => [v[i], days(s)]));
   }
   function abrHasData(c) { return ABR_SEASONS.every(s => abrMae(c.seasons[s.key]) != null); }
   function abrHasCsv(c) { return ABR_SEASONS.some(s => c.seasons[s.key].csv); }
@@ -379,8 +422,7 @@
     { value: 'mae', label: 'MAE [kW]', unit: 'kW', d: 2 },
     { value: 'mape', label: 'MAPE diurno [%]', unit: '%', d: 1 },
     { value: 'wmape', label: 'wMAPE diurno [%]', unit: '%', d: 1 },
-    { value: 'nmae_mean', label: 'nMAE sulla potenza media [%]', unit: '%', d: 1 },
-    { value: 'nmae_ref', label: 'nMAE sulla potenza massima [%]', unit: '%', d: 2 },
+    { value: 'nmae', label: 'nMAE sulla potenza media [%]', unit: '%', d: 1 },
     { value: 'ss', label: 'Skill score vs persistenza [%]', unit: '%', d: 1 },
     { value: 'skill', label: 'Miglioramento del MAE vs persistenza [%]', unit: '%', d: 1 },
     { value: 'r2', label: 'R²', unit: '', d: 3 },
@@ -389,7 +431,7 @@
     const x = ofPers ? s.pers : s.metrics;
     switch (m) {
       case 'mae': return x.mae; case 'mape': return x.mape_day; case 'wmape': return x.wmape_day;
-      case 'nmae_mean': return 100 * x.mae / x.mean_real; case 'nmae_ref': return 100 * x.mae / P_MAX;
+      case 'nmae': { const p = (GD_SHEET[s._sheet] || {}).p_mean; return p ? 100 * x.mae / p : null; }
       case 'skill': return ofPers ? null : 100 * (1 - s.metrics.mae / s.pers.mae);
       case 'ss': return ofPers ? null : skillScore(s.metrics.rmse, s.pers.rmse);
       case 'r2': return x.r2;
@@ -724,14 +766,14 @@
     for (const m of run.metrics) {
       rows.push({ ds: DS_GD, fam: 'reg', part: FAM_NAME.reg, key: 'reg-' + m.id, name: m.label, step: '—',
         th: '—', tl: '—', cells: m.id === 'mlp' ? '64-32-16' : m.id === 'single_neuron' ? '1 neurone' : '—',
-        mae: m.mae, unit: 'kW', nmae_mean: m.nmae, nmae_ref: m.nmae_ref, skill: null, r2: m.r2,
+        mae: m.mae, unit: 'kW', nmae: regNmae(m), nmae_prod: regNmae(m), skill: null, r2: m.r2,
         src: run.source, baseline: m.id === 'baseline', _hl: best && m.id === best.id });
     }
     for (const fk of ['exo', 'endo', 'exoJ', 'endoJ']) for (const c of GD[fk].configs) {
       const F = GD[fk];
       rows.push({ ds: DS_GD, fam: fk, part: FAM_NAME[fk], key: fk + '-' + c.id, name: c.id, step: '5 min (stima)',
         th: `${c.th} passi (${c.th * EXO.step_min} min)`, tl: `${c.tl} ${c.tl === 1 ? 'passo' : 'passi'} (${c.tl * EXO.step_min} min)`, cells: c.cells,
-        mae: gdVal(F, c, 'mae', 'mean'), unit: 'kW', nmae_mean: gdVal(F, c, 'nmae_mean', 'mean'), nmae_ref: gdVal(F, c, 'nmae_ref', 'mean'),
+        mae: gdVal(F, c, 'mae', 'mean'), unit: 'kW', nmae: gdVal(F, c, 'nmae', 'mean'), nmae_prod: gdVal(F, c, 'nmae', 'mean'),
         skill: gdVal(F, c, 'skill', 'mean'), ss: gdVal(F, c, 'ss', 'mean'), r2: gdVal(F, c, 'r2', 'mean'), src: F.joined ? 'CSV ricalcolato (anno 3)' : 'CSV ricalcolato', _hl: c.preferred });
     }
     for (const c of ABR.configs) {
@@ -739,7 +781,7 @@
       const srcs = [...new Set(ABR_SEASONS.map(s => c.seasons[s.key].csv ? 'CSV ricalcolato' : 'Metrics.txt'))].join(' + ');
       rows.push({ ds: DS_ABR, fam: 'abr', part: FAM_NAME.abr, key: 'abr-' + c.id, name: c.id, step: '1 h', tlh: c.tl,
         th: c.th + ' h', tl: c.tl + ' h', cells: c.cells, mae: abrVal(c, 'mae', 'mean'), unit: 'kWh',
-        nmae_mean: abrVal(c, 'nmae_mean', 'mean'), nmae_ref: abrVal(c, 'nmae_nom', 'mean'),
+        nmae: abrVal(c, 'nmae', 'mean'), nmae_prod: abrVal(c, 'nmae_prod', 'mean'),
         skill: abrVal(c, 'skill_yest', 'mean'), ss: abrVal(c, 'ss_yest', 'mean'), r2: null, src: srcs, _hl: c.preferred });
     }
     return rows;
@@ -777,26 +819,26 @@
     view.append(h('div', { class: 'grid two' },
       datasetCard(DS_GD, 'Un impianto, tre modelli sugli stessi dati.', [
         `Potenza AC con passo stimato di 5 minuti, solo ore di luce (${fmt(REG.n, 0)} campioni).`,
-        `${EXO_SEASONS.length} fogli stagionali su tre anni; potenza massima misurata ${fmt(P_MAX, 1)} kW (la nominale non è nota).`,
+        `${EXO_SEASONS.length} fogli stagionali su tre anni; impianto da ${fmt(P_NOM_GD, 0)} kWp, potenza massima misurata ${fmt(P_MAX, 1)} kW.`,
         'Regressione: stima la potenza nello stesso istante dalle variabili meteo. LSTM: prevedono la potenza dei passi successivi, con la potenza passata e il meteo (esogena) o con la sola potenza passata (endogena).',
-      ], [table(miniCols('kW'), gdRows), h('p', { class: 'note' }, 'LSTM: reti addestrate stagione per stagione, media sulle stagioni. Persistenza = ultimo valore noto.')],
+      ], [table(miniCols('kW'), gdRows), h('p', { class: 'note' }, 'LSTM: reti addestrate stagione per stagione, media sulle stagioni pesata con i giorni di ciascuna. Persistenza = ultimo valore noto.')],
       'gd/confronto', 'Apri Generation data'),
       datasetCard(DS_ABR, 'Un impianto, reti LSTM endogene con finestre e orizzonti diversi.', [
         `Energia oraria (inverter WR1 + WR2) di un impianto da ${fmt(P_NOM, 2)} kWp.`,
         `${ABR_SEASONS.length} stagioni (primavera ed estate 2020 e 2021), un modello per stagione; test = ultimo 10 % di ogni stagione (circa 9 giorni).`,
         'Le reti vedono solo la produzione passata e prevedono l\'energia da 1 a 24 ore dopo.',
-      ], [table(miniCols('kWh'), abrRows), h('p', { class: 'note' }, 'Migliore configurazione per ciascun orizzonte, media sulle 4 stagioni. Riferimento = stessa ora del giorno prima.')],
+      ], [table(miniCols('kWh'), abrRows), h('p', { class: 'note' }, 'Migliore configurazione per ciascun orizzonte, media sulle 4 stagioni pesata con i giorni. Riferimento = stessa ora del giorno prima.')],
       'abruzzo/confronto', 'Apri Monomega Abruzzo'),
     ));
 
     // --- normalised error across datasets
     const OV = [
-      { value: 'nmae_ref', label: 'nMAE sulla potenza di riferimento [%]', d: 2, unit: '%' },
-      { value: 'nmae_mean', label: 'nMAE sulla potenza media misurata [%]', d: 1, unit: '%' },
+      { value: 'nmae_prod', label: 'nMAE sulla potenza media, Abruzzo sulle ore di produzione [%]', d: 1, unit: '%' },
+      { value: 'nmae', label: 'nMAE sulla potenza media, Abruzzo su tutte le ore [%]', d: 1, unit: '%' },
     ];
     const met = OV.find(o => o.value === S.ovMetric) || OV[0];
     view.append(sectionTitle('I due dataset a confronto', null,
-      'Gli errori in kW e in kWh non si possono confrontare tra impianti di taglia diversa: qui sono divisi per una potenza di riferimento (nMAE). Per ogni modello è mostrata la configurazione migliore.'));
+      'Gli errori in kW e in kWh non si possono confrontare tra impianti di taglia diversa: qui sono divisi per la potenza media misurata (nMAE). Per ogni modello è mostrata la configurazione migliore.'));
     view.append(filters(selectCtl('Metrica', OV, met.value, v => set('ovMetric', v))));
     const all = overviewRows().filter(r => !r.baseline && r[met.value] != null);
     const groups = [
@@ -806,9 +848,9 @@
     const labels = groups.map(g => `${g.name} · ${g.best.name}`);
     const div = chartDiv();
     div.style.height = Math.max(260, groups.length * 40 + 90) + 'px';
-    const refTxt = met.value === 'nmae_ref'
-      ? `Riferimento: ${fmt(P_NOM, 2)} kWp per l'Abruzzo; per Generation data la potenza nominale non è nota e si usa la potenza massima misurata (${fmt(P_MAX, 1)} kW).`
-      : 'Riferimento: potenza (o energia) media misurata nel test. Nell\'Abruzzo la media comprende le ore notturne, che Generation data non ha: le due colonne possono ordinare i modelli in modo diverso.';
+    const refTxt = met.value === 'nmae_prod'
+      ? 'Riferimento: potenza media misurata del periodo di test (media pesata delle stagioni divisa per la potenza media di tutte le stagioni insieme). Per l\'Abruzzo la media è calcolata sulle sole ore con produzione: Generation data non ha le notti, quindi così i due dataset sono confrontati alla pari.'
+      : 'Riferimento: potenza media misurata del periodo di test. Per l\'Abruzzo la media comprende anche le ore notturne a produzione nulla, che Generation data non ha: l\'nMAE dell\'Abruzzo risulta più alto.';
     view.append(card(met.label, refTxt + ' La regressione non prevede: stima la potenza nello stesso istante.', div));
     const mk = ds => {
       const gs = groups.filter(g => g.ds === ds);
@@ -829,8 +871,8 @@
         { key: 'ds', label: 'Dataset' }, { key: 'part', label: 'Modello' }, { key: 'name', label: 'Configurazione' },
         { key: 'th', label: 'Finestra (TH)' }, { key: 'tl', label: 'Orizzonte (TL)' }, { key: 'cells', label: 'Celle / neuroni' },
         { key: 'mae', label: 'MAE', num: true, render: r => fmt(r.mae, 2) + ' ' + r.unit },
-        { key: 'nmae_ref', label: 'nMAE rif. [%]', num: true, fmt: v => fmt(v, 2) },
-        { key: 'nmae_mean', label: 'nMAE media [%]', num: true, fmt: v => fmt(v, 1) },
+        { key: 'nmae', label: 'nMAE tutte le ore [%]', num: true, fmt: v => fmt(v, 1), title: 'MAE / potenza media misurata; per Generation data le due colonne coincidono (non ci sono notti)' },
+        { key: 'nmae_prod', label: 'nMAE ore di produzione [%]', num: true, fmt: v => fmt(v, 1), title: 'MAE / potenza media sulle ore con produzione (Abruzzo); per Generation data coincide con la colonna precedente' },
         { key: 'skill', label: 'vs riferimento (MAE)', num: true, render: r => signed(r.skill), title: 'Abruzzo: stessa ora di ieri; Generation data: persistenza' },
         { key: 'ss', label: 'Skill score', num: true, render: r => signed(r.ss), title: 'Abruzzo: rispetto alla stessa ora di ieri; Generation data: rispetto alla persistenza' },
         { key: 'r2', label: 'R²', num: true, fmt: v => fmt(v, 3) },
@@ -855,7 +897,7 @@
     const bestM = bestReg(run);
     view.append(sectionTitle('In sintesi', null, `Errore sul test dei quattro modelli (${fmt(run.samples ? run.samples.test : 0, 0)} campioni). La baseline prevede sempre la potenza media: serve a capire quanto aggiungono gli altri modelli.`));
     view.append(h('div', { class: 'grid four' }, run.metrics.map(m => tile(m.label, m === bestM ? 'MAE più basso' : m.id === 'baseline' ? 'riferimento' : null, fmt(m.mae, 2), 'kW MAE',
-      [fact('RMSE', fmt(m.rmse, 2)), fact('R²', fmt(m.r2, 3)), fact('nMAE', fmt(m.nmae, 1) + ' %')], m === bestM))));
+      [fact('RMSE', fmt(m.rmse, 2)), fact('R²', fmt(m.r2, 3)), fact('nMAE', fmt(regNmae(m), 1) + ' %')], m === bestM))));
 
     // scatter + error by power band
     const sc = run.scatter;
@@ -915,18 +957,18 @@
     for (const r of REG.runs) for (const m of r.metrics) {
       const other = REG.runs.find(o => o.name !== r.name);
       const om = other ? other.metrics.find(x => x.id === m.id) : null;
-      rows.push(Object.assign({}, m, { run: r.name + (r.used ? ' ★' : ''), dmae: om ? m.mae - om.mae : null, _hl: r.used }));
+      rows.push(Object.assign({}, m, { run: r.name + (r.used ? ' ★' : ''), nmae_all: regNmae(m), dmae: om ? m.mae - om.mae : null, _hl: r.used }));
     }
     view.append(foldCard('Metriche di tutti i run', 'Valori letti da Modelli/metriche.txt di ogni run (★ = run usato nella tesi). "Verifica" = MAE ricalcolato dai punti del grafico salvato: deve coincidere.',
       table([
         { key: 'run', label: 'Run' }, { key: 'label', label: 'Modello' },
         { key: 'rmse', label: 'RMSE [kW]', num: true, fmt: v => fmt(v, 3) }, { key: 'mae', label: 'MAE [kW]', num: true, fmt: v => fmt(v, 3) },
-        { key: 'nmae', label: 'nMAE [%]', num: true, fmt: v => fmt(v, 3) }, { key: 'nmae_ref', label: 'nMAE rif. [%]', num: true, fmt: v => fmt(v, 3) },
+        { key: 'nmae_all', label: 'nMAE [%]', num: true, fmt: v => fmt(v, 3) },
         { key: 'r2', label: 'R²', num: true, fmt: v => fmt(v, 4) }, { key: 'bias', label: 'Errore medio [kW]', num: true, fmt: v => fmt(v, 3) },
         { key: 'check_mae', label: 'Verifica MAE', num: true, fmt: v => fmt(v, 3) },
         { key: 'dmae', label: 'Δ MAE vs altro run', num: true, fmt: v => fmtS(v, 3) },
       ], rows)));
-    view.append(h('p', { class: 'note' }, `nMAE = MAE / potenza media misurata nel test (come in metriche.txt); nMAE rif. = MAE / ${fmt(P_MAX, 1)} kW (potenza massima misurata in Generation data). Fonti: ${REG.runs.map(r => r.source).join(' · ')}.`));
+    view.append(h('p', { class: 'note' }, `nMAE = MAE / ${fmt(REG.p_mean, 2)} kW, potenza media di tutto il dataset (foglio Dati_completi): il test è estratto a caso da tutto il periodo. Fonti: ${REG.runs.map(r => r.source).join(' · ')}.`));
   }
 
   // ================================================================== VIEW: Abruzzo · comparison of the configurations
@@ -956,7 +998,7 @@
       const b = bestOf(ok.filter(x => x.tl === tl), x => abrVal(x, 'mae', 'mean'));
       const pf = ok.find(x => x.tl === tl && x.preferred && x !== b);
       return tile(`Previsione a ${tl} ${tl === 1 ? 'ora' : 'ore'}`, `${b.id}${b.preferred ? ' · preferita' : ' · MAE più basso'}`, fmt(abrVal(b, 'mae', 'mean'), 2), 'kWh MAE',
-        [h('span', null, 'vs stessa ora di ieri ', signed(abrVal(b, 'skill_yest', 'mean'))), h('span', null, 'skill score ', signed(abrVal(b, 'ss_yest', 'mean'))), fact('nMAE nominale', fmt(abrVal(b, 'nmae_nom', 'mean'), 2) + ' %'),
+        [h('span', null, 'vs stessa ora di ieri ', signed(abrVal(b, 'skill_yest', 'mean'))), h('span', null, 'skill score ', signed(abrVal(b, 'ss_yest', 'mean'))), fact('nMAE', fmt(abrVal(b, 'nmae', 'mean'), 1) + ' % (tutte le ore)'), fact('nMAE', fmt(abrVal(b, 'nmae_prod', 'mean'), 1) + ' % (ore di produzione)'),
           pf ? fact('preferita', `${pf.id} (${fmt(abrVal(pf, 'mae', 'mean'), 2)} kWh)`) : null], b.preferred);
     })));
 
@@ -1035,11 +1077,12 @@
     // ranking (mean over the seasons)
     view.append(sectionTitle('Classifica delle configurazioni', null, 'Media delle 4 stagioni, ordinata per MAE. Clicca su una configurazione per aprirne il dettaglio.'));
     const rank = ABR.configs.map(x => ({ id: x.id, th: x.th, tl: x.tl, cells: x.cells, mae: abrHasData(x) ? abrVal(x, 'mae', 'mean') : null,
-      mape: abrVal(x, 'mape', 'mean'), nnom: abrVal(x, 'nmae_nom', 'mean'), sky: abrVal(x, 'skill_yest', 'mean'), ssy: abrVal(x, 'ss_yest', 'mean'), skp: abrVal(x, 'skill_pers', 'mean'), _hl: x.preferred }));
-    view.append(card('Media delle stagioni', 'La barra blu segna la configurazione preferita. Persistenza solo per TL ≤ ' + ABR_PERS_MAX_TL + ' h.', table([
+      mape: abrVal(x, 'mape', 'mean'), nall: abrVal(x, 'nmae', 'mean'), nprod: abrVal(x, 'nmae_prod', 'mean'), sky: abrVal(x, 'skill_yest', 'mean'), ssy: abrVal(x, 'ss_yest', 'mean'), skp: abrVal(x, 'skill_pers', 'mean'), _hl: x.preferred }));
+    view.append(card('Media delle stagioni', 'Medie pesate con i giorni di ogni stagione. La barra blu segna la configurazione preferita. Persistenza solo per TL ≤ ' + ABR_PERS_MAX_TL + ' h.', table([
       { key: 'id', label: 'Configurazione', render: r => linkBtn(r.id, () => openAbrDetail(r.id), 'Apri il dettaglio') },
       { key: 'th', label: 'TH [h]', num: true }, { key: 'tl', label: 'TL [h]', num: true }, { key: 'cells', label: 'Celle', num: true },
-      { key: 'mae', label: 'MAE [kWh]', num: true, fmt: v => fmt(v, 2) }, { key: 'nnom', label: 'nMAE nom. [%]', num: true, fmt: v => fmt(v, 2) },
+      { key: 'mae', label: 'MAE [kWh]', num: true, fmt: v => fmt(v, 2) },
+      { key: 'nall', label: 'nMAE tutte le ore [%]', num: true, fmt: v => fmt(v, 1) }, { key: 'nprod', label: 'nMAE ore di produzione [%]', num: true, fmt: v => fmt(v, 1) },
       { key: 'mape', label: 'MAPE diurno [%]', num: true, fmt: v => fmt(v, 1) },
       { key: 'sky', label: 'vs ieri (MAE)', num: true, render: r => signed(r.sky) },
       { key: 'ssy', label: 'Skill score vs ieri', num: true, render: r => signed(r.ssy), title: '1 − Σ(misura − rete)² / Σ(misura − stessa ora di ieri)²' },
@@ -1051,7 +1094,7 @@
     for (const x of ABR.configs) for (const ss of ABR_SEASONS) {
       const e = x.seasons[ss.key];
       rows.push({ cfg: x.id, season: ss.label, n: e.base.n_test, mae: abrMae(e), mape: abrMape(e), pers: x.tl <= ABR_PERS_MAX_TL ? e.base.pers.mae : null, yest: e.base.yest.mae,
-        skp: abrSeasonVal(e, 'skill_pers', x.tl), sky: abrSeasonVal(e, 'skill_yest', x.tl), ssy: abrSeasonVal(e, 'ss_yest', x.tl), nnom: abrSeasonVal(e, 'nmae_nom', x.tl),
+        skp: abrSeasonVal(e, 'skill_pers', x.tl), sky: abrSeasonVal(e, 'skill_yest', x.tl), ssy: abrSeasonVal(e, 'ss_yest', x.tl), nall: abrSeasonVal(e, 'nmae', x.tl), nprod: abrSeasonVal(e, 'nmae_prod', x.tl),
         _hl: x.preferred });
     }
     view.append(foldCard(`Tutte le stagioni di tutte le configurazioni (${rows.length} righe)`, `Metriche ricalcolate dai file Risultati_<stagione>.csv; persistenza e stessa ora di ieri sono calcolate dai dati misurati sugli stessi campioni di test.`,
@@ -1061,7 +1104,7 @@
         { key: 'pers', label: 'MAE persistenza', num: true, fmt: v => fmt(v, 2) }, { key: 'yest', label: 'MAE ieri', num: true, fmt: v => fmt(v, 2) },
         { key: 'skp', label: 'vs persistenza', num: true, render: r => signed(r.skp) }, { key: 'sky', label: 'vs ieri (MAE)', num: true, render: r => signed(r.sky) },
         { key: 'ssy', label: 'Skill score vs ieri', num: true, render: r => signed(r.ssy) },
-        { key: 'nnom', label: 'nMAE nom. [%]', num: true, fmt: v => fmt(v, 2) },
+        { key: 'nall', label: 'nMAE tutte le ore [%]', num: true, fmt: v => fmt(v, 1) }, { key: 'nprod', label: 'nMAE ore di produzione [%]', num: true, fmt: v => fmt(v, 1) },
       ], rows, { scroll: true })));
   }
 
@@ -1097,13 +1140,14 @@
     const mae = abrMae(s);
     view.append(sectionTitle(`${seasonLabel(S.abrDetSeason)} · ${cf.id}`, null, `Test dal ${s.base.t_start.slice(0, 16)} al ${s.base.t_end.slice(0, 16)}.`));
     view.append(h('div', { class: 'grid four' },
-      tile('MAE della rete', `${cf.id} · ${seasonLabel(S.abrDetSeason)}`, fmt(mae, 2), 'kWh', [fact('MAPE diurno', fmt(abrMape(s), 1) + ' %')]),
+      tile('MAE della rete', `${cf.id} · ${seasonLabel(S.abrDetSeason)}`, fmt(mae, 2), 'kWh', [fact('nMAE', fmt(abrSeasonVal(s, 'nmae', cf.tl), 1) + ' % (tutte le ore)'),
+        fact('nMAE', fmt(abrSeasonVal(s, 'nmae_prod', cf.tl), 1) + ' % (ore di produzione)'), fact('MAPE diurno', fmt(abrMape(s), 1) + ' %')]),
       tile('Stessa ora di ieri', 'valore di 24 ore prima (riferimento principale)', fmt(s.base.yest.mae, 2), 'kWh', [h('span', null, 'rete ', signed(abrSeasonVal(s, 'skill_yest', cf.tl))), h('span', null, 'skill score ', signed(abrSeasonVal(s, 'ss_yest', cf.tl)))]),
       cf.tl <= ABR_PERS_MAX_TL
         ? tile('Persistenza', `ultimo valore noto (${cf.tl} h prima)`, fmt(s.base.pers.mae, 2), 'kWh', [h('span', null, 'rete ', signed(abrSeasonVal(s, 'skill_pers', cf.tl)))])
         : tile('Persistenza', `non usata con TL = ${cf.tl} h`, '—', null, [h('span', null, 'vedi Definizioni e note')]),
       tile('Test', 'ore di test', fmt(s.base.n_test, 0), 'ore',
-        [fact('Energia media', fmt(s.base.mean_real, 1) + ' kWh'), s.csv ? fact('R²', fmt(s.csv.r2, 3)) : null]),
+        [fact('Potenza media della stagione', `${fmt((ABR_SINFO[S.abrDetSeason] || {}).p_mean, 1)} kW (tutte le ore), ${fmt((ABR_SINFO[S.abrDetSeason] || {}).p_mean_prod, 1)} kW (ore di produzione)`), s.csv ? fact('R²', fmt(s.csv.r2, 3)) : null]),
     ));
     const ts = chartDiv('tall');
     view.append(card('Energia misurata e prevista nel test', 'Trascina sulla barra in basso per scegliere il periodo; passa il mouse (o tocca) per leggere tutti i valori di un\'ora.', ts,
@@ -1202,8 +1246,8 @@
   }
   // mean over the seasons that both configurations have (or over one configuration's seasons)
   function commonKeys(F, a, b) { return F.seasons.map(s => s.key).filter(k => (!a || a.seasons[k]) && (!b || b.seasons[k])); }
-  function meanOn(keys, cf, m, ofPers, samples) { return cf ? mean(keys.map(k => exoSeasonVal(gdView(cf.seasons[k], samples), m, ofPers))) : null; }
-  const LOWER_BETTER = { mae: true, mape: true, wmape: true, nmae_mean: true, nmae_ref: true, skill: false, ss: false, r2: false };
+  function meanOn(keys, cf, m, ofPers, samples) { return cf ? gdAgg(keys, k => gdView(cf.seasons[k], samples), m, ofPers) : null; }
+  const LOWER_BETTER = { mae: true, mape: true, wmape: true, nmae: true, skill: false, ss: false, r2: false };
   // positive = the exogenous network is better
   function advantage(m, endoV, exoV) { if (endoV == null || exoV == null) return null; return LOWER_BETTER[m] ? endoV - exoV : exoV - endoV; }
 
@@ -1213,7 +1257,7 @@
   function trainNote(joined) {
     return joined
       ? 'Anni uniti: per ogni stagione la rete è addestrata sugli anni 1 e 2 e provata sul foglio dell\'anno 3 (per la Primavera solo sull\'anno 2, perché Primavera_1 non esiste). Con "Ultimo 20 %" il test usa gli stessi campioni delle reti per stagione.'
-      : 'Stagioni separate: un modello per ciascuno degli 11 fogli; test = ultimo 20 % delle finestre di ogni foglio. Le medie sono medie semplici sulle stagioni.';
+      : 'Stagioni separate: un modello per ciascuno degli 11 fogli; test = ultimo 20 % delle finestre di ogni foglio. Le medie sulle stagioni sono pesate con i giorni di ogni stagione.';
   }
   function scrollToId(id) { const e = document.getElementById(id); if (e) e.scrollIntoView({ behavior: 'smooth', block: 'start' }); }
 
@@ -1263,7 +1307,7 @@
     const { ths, tls } = axesOf(cells, F);
     const g1 = h('div', { class: 'grid two' }); view.append(g1);
     const hm = chartDiv('short'), hp = chartDiv('short');
-    const where = sKey === 'mean' ? 'Media sulle stagioni.' : seasonLabel(sKey) + '.';
+    const where = sKey === 'mean' ? 'Media sulle stagioni, pesata con i giorni.' : seasonLabel(sKey) + '.';
     g1.append(card(`${met.label} · ${cells} celle`, `${where} TL e TH in passi da 5 minuti; — = combinazione non provata.`, hm));
     const rightIsPers = isSk(met.value);
     g1.append(card(rightIsPers ? 'MAE della persistenza [kW]' : 'Miglioramento rispetto alla persistenza [%]',
@@ -1308,11 +1352,11 @@
 
     const raw = cf.seasons[sk], s = gdView(raw), m = s.metrics;
     view.append(h('div', { class: 'grid four' },
-      tile('MAE della rete', `${cf.id} · ${seasonLabel(sk)}`, fmt(m.mae, 2), 'kW', [fact('RMSE', fmt(m.rmse, 2)), fact('R²', fmt(m.r2, 3))]),
+      tile('MAE della rete', `${cf.id} · ${seasonLabel(sk)}`, fmt(m.mae, 2), 'kW', [fact('RMSE', fmt(m.rmse, 2)), fact('R²', fmt(m.r2, 3)), fact('nMAE', fmt(exoSeasonVal(s, 'nmae'), 1) + ' %')]),
       tile('Persistenza', `ultimo valore noto (${cf.tl} ${cf.tl === 1 ? 'passo' : 'passi'} prima)`, fmt(s.pers.mae, 2), 'kW', [h('span', null, 'rete ', signed(exoSeasonVal(s, 'skill'))), fact('RMSE', fmt(s.pers.rmse, 2)), h('span', null, 'skill score ', signed(exoSeasonVal(s, 'ss')))]),
       tile('Errori percentuali', 'ore diurne (> 5 % del massimo)', fmt(m.mape_day, 1), '% MAPE', [fact('wMAPE', fmt(m.wmape_day, 1) + ' %')]),
       tile('Test', joined ? `addestrata su ${raw.train.join(' + ')}` : 'ultimo 20 % del foglio', fmt(s.n_test, 0), 'campioni', [fact('su', fmt(raw.n_series, 0) + ' righe'),
-        fact('Potenza media', fmt(m.mean_real, 1) + ' kW')]),
+        fact('Potenza media della stagione', fmt((GD_SHEET[sk] || {}).p_mean, 1) + ' kW')]),
     ));
     const sr = raw.series;
     const x = S.gdAxis === 'hours' ? sr.idx.map(i => (i - sr.idx[0]) * EXO.step_min / 60) : sr.idx;
@@ -1385,7 +1429,7 @@
   // regression metric with the same meaning as an LSTM metric (null when the regression has no such value)
   function regMetric(m, met) {
     if (!m) return null;
-    return { mae: m.mae, nmae_mean: m.nmae, nmae_ref: m.nmae_ref, r2: m.r2 }[met] ?? null;
+    return { mae: m.mae, nmae: regNmae(m), r2: m.r2 }[met] ?? null;
   }
   function viewGDCompare() {
     const c = C();
@@ -1410,7 +1454,7 @@
     const exoWins = diffs.filter(d => d > 0).length;
     view.append(sectionTitle('In sintesi', null, 'Errore assoluto medio (MAE) della configurazione migliore di ogni modello.'));
     view.append(h('div', { class: 'grid four' },
-      tile('Regressione', `${rb.label} · stima nello stesso istante`, fmt(rb.mae, 2), 'kW MAE', [fact('R²', fmt(rb.r2, 3)), fact('nMAE media', fmt(rb.nmae, 1) + ' %')]),
+      tile('Regressione', `${rb.label} · stima nello stesso istante`, fmt(rb.mae, 2), 'kW MAE', [fact('R²', fmt(rb.r2, 3)), fact('nMAE', fmt(regNmae(rb), 1) + ' %')]),
       tile('LSTM esogena', `${bx.id} · previsione a ${bx.tl * EXO.step_min} min`, fmt(gdVal(FX, bx, 'mae', 'mean'), 2), 'kW MAE',
         [h('span', null, 'vs persistenza ', signed(gdVal(FX, bx, 'skill', 'mean'))), h('span', null, 'skill score ', signed(gdVal(FX, bx, 'ss', 'mean'))), fact('R²', fmt(gdVal(FX, bx, 'r2', 'mean'), 3))]),
       tile('LSTM endogena', `${bn.id} · previsione a ${bn.tl * EXO.step_min} min`, fmt(gdVal(FN, bn, 'mae', 'mean'), 2), 'kW MAE',
@@ -1540,7 +1584,7 @@
         for (const s of FJ.seasons) {
           const ej = j.seasons[s.key]; if (!ej) continue;
           const es = sp && sp.seasons[s.key];
-          const row = { fam: b2 === 'endo' ? 'Endogena' : 'Esogena', cfg: j.id, season: s.label, n: ej.n_last20,
+          const row = { fam: b2 === 'endo' ? 'Endogena' : 'Esogena', cfg: j.id, season: s.label, n: ej.n_last20, w: (GD_SHEET[s.key] || {}).days,
             sep: es ? es.metrics.mae : null, join: ej.m20.mae, d: es ? es.metrics.mae - ej.m20.mae : null, pers: ej.p20.mae,
             all: ej.metrics.mae, same: es ? es.n_test === ej.n_last20 : null };
           jr.push(row);
@@ -1550,16 +1594,17 @@
     }
     if (!jr.length) { view.append(emptyBox('Le reti con gli anni uniti non hanno ancora risultati salvati.')); }
     else {
-      const ag = Object.values(agg).map(a => ({ fam: a.fam, cfg: a.cfg, th: a.th, tl: a.tl, n: a.list.length, sep: mean(a.list.map(r => r.sep)), join: mean(a.list.map(r => r.join)),
-        d: mean(a.list.map(r => r.d)), pers: mean(a.list.map(r => r.pers)), better: a.list.filter(r => r.d > 0).length }));
+      const wm = (list, k) => wmean(list.map(r => [r[k], r.w]));
+      const ag = Object.values(agg).map(a => ({ fam: a.fam, cfg: a.cfg, th: a.th, tl: a.tl, n: a.list.length, sep: wm(a.list, 'sep'), join: wm(a.list, 'join'),
+        d: wm(a.list, 'd'), pers: wm(a.list, 'pers'), better: a.list.filter(r => r.d > 0).length }));
       const ids = [...new Set(ag.map(a => a.cfg))].sort((p, q) => { const A = ag.find(a => a.cfg === p), B = ag.find(a => a.cfg === q); return A.tl - B.tl || A.th - B.th; });
       const dj = chartDiv('short');
-      view.append(card('Guadagno degli anni uniti [kW]', 'MAE stagione separata − MAE anni uniti, in media sui fogli dell\'anno 3: positivo = addestrare su due anni riduce l\'errore.', dj));
+      view.append(card('Guadagno degli anni uniti [kW]', 'MAE stagione separata − MAE anni uniti, in media sui fogli dell\'anno 3 (pesata con i giorni): positivo = addestrare su due anni riduce l\'errore.', dj));
       const tj = ['Esogena', 'Endogena'].map((fam, i) => ({ type: 'bar', name: fam, x: ids, y: ids.map(id => { const a = ag.find(r => r.fam === fam && r.cfg === id); return a ? a.d : null; }),
         marker: { color: i ? c.s2 : c.s1 }, customdata: ids.map(id => { const a = ag.find(r => r.fam === fam && r.cfg === id); return a ? `${fmt(a.sep, 2)} → ${fmt(a.join, 2)} kW` : ''; }),
         hovertemplate: `${fam} · %{x}<br><b>%{y:+.2f} kW</b> (%{customdata})<extra></extra>` }));
       plot(dj, tj, { barmode: 'group', xaxis: { type: 'category', tickangle: -30 }, yaxis: { title: { text: 'Riduzione del MAE [kW]' }, zeroline: true, zerolinecolor: c.text2 } }, 'anni_uniti_guadagno');
-      view.append(foldCard('Valori medi per configurazione', 'Medie sui fogli dell\'anno 3 che hanno entrambe le reti.', table([
+      view.append(foldCard('Valori medi per configurazione', 'Medie sui fogli dell\'anno 3 che hanno entrambe le reti, pesate con i giorni di ogni foglio.', table([
         { key: 'fam', label: 'Rete' }, { key: 'cfg', label: 'Configurazione' }, { key: 'n', label: 'Fogli', num: true },
         { key: 'sep', label: 'MAE stagione separata', num: true, fmt: v => fmt(v, 2) }, { key: 'join', label: 'MAE anni uniti', num: true, fmt: v => fmt(v, 2) },
         { key: 'd', label: 'Δ [kW]', num: true, render: r => signed(r.d, 2, ' kW') }, { key: 'better', label: 'Fogli migliorati', num: true, render: r => `${r.better} su ${r.n}` },
@@ -1578,7 +1623,7 @@
     view.append(foldCard(`Tabella completa (${all.length} righe)`, 'Regressione (run usato nella tesi) e tutte le configurazioni LSTM, con le stagioni separate e con gli anni uniti (questi ultimi sull\'anno 3).', table([
       { key: 'part', label: 'Modello' }, { key: 'name', label: 'Configurazione' }, { key: 'th', label: 'Finestra (TH)' }, { key: 'tl', label: 'Orizzonte (TL)' },
       { key: 'cells', label: 'Celle / neuroni' }, { key: 'mae', label: 'MAE [kW]', num: true, fmt: v => fmt(v, 2) },
-      { key: 'nmae_mean', label: 'nMAE media [%]', num: true, fmt: v => fmt(v, 1) }, { key: 'nmae_ref', label: 'nMAE rif. [%]', num: true, fmt: v => fmt(v, 2) },
+      { key: 'nmae', label: 'nMAE [%]', num: true, fmt: v => fmt(v, 1) },
       { key: 'skill', label: 'vs persistenza (MAE)', num: true, render: r => signed(r.skill) },
       { key: 'ss', label: 'Skill score', num: true, render: r => signed(r.ss) }, { key: 'r2', label: 'R²', num: true, fmt: v => fmt(v, 3) },
     ], all, { scroll: true })));
@@ -2105,33 +2150,74 @@
       h('li', null, sw(c.s1), 'misura reale'), h('li', null, sw(c.s2), 'previsione del modello'),
       h('li', null, sw(c.s3), 'persistenza'), h('li', null, sw(c.s4), 'stessa ora del giorno prima'),
       h('li', null, 'Nei grafici che confrontano configurazioni o stagioni, i colori indicano la configurazione o la stagione: la legenda di ogni grafico lo dice.')))));
-    view.append(card('Metriche', null, h('div', { class: 'prose' },
+    // formulas in MathML: drawn by the browser like LaTeX, no external library (works offline)
+    const SUM_I = '<munderover><mo>∑</mo><mrow><mi>i</mi><mo>=</mo><mn>1</mn></mrow><mi>N</mi></munderover>';
+    const SUM_S = '<munder><mo>∑</mo><mi>s</mi></munder>';
+    const Yi = '<msub><mi>y</mi><mi>i</mi></msub>', YHi = '<msub><mover accent="true"><mi>y</mi><mo>^</mo></mover><mi>i</mi></msub>';
+    const YBAR = '<mi>ȳ</mi>', YREF = '<msubsup><mi>y</mi><mi>i</mi><mtext>rif</mtext></msubsup>';
+    const sq = x => `<msup><mrow><mo>(</mo>${x}<mo>)</mo></mrow><mn>2</mn></msup>`;
+    const PCT = '<mo>×</mo><mn>100</mn><mo>%</mo>';
+    const PBAR = sub => `<msub><mi>P̄</mi>${sub}</msub>`;
+    const DS = x => `${SUM_S}<msub><mi>d</mi><mi>s</mi></msub>${x}`;
+    const FM = {
+      mae: `<mi>MAE</mi><mo>=</mo><mfrac><mn>1</mn><mi>N</mi></mfrac>${SUM_I}<mo>|</mo>${Yi}<mo>−</mo>${YHi}<mo>|</mo>`,
+      rmse: `<mi>RMSE</mi><mo>=</mo><msqrt><mfrac><mn>1</mn><mi>N</mi></mfrac>${SUM_I}${sq(Yi + '<mo>−</mo>' + YHi)}</msqrt>`,
+      r2: `<msup><mi>R</mi><mn>2</mn></msup><mo>=</mo><mn>1</mn><mo>−</mo><mfrac><mrow>${SUM_I}${sq(Yi + '<mo>−</mo>' + YHi)}</mrow><mrow>${SUM_I}${sq(Yi + '<mo>−</mo>' + YBAR)}</mrow></mfrac>`,
+      ss: `<mi>SS</mi><mo>=</mo><mrow><mo>(</mo><mn>1</mn><mo>−</mo><mfrac><mrow>${SUM_I}${sq(Yi + '<mo>−</mo>' + YHi)}</mrow><mrow>${SUM_I}${sq(Yi + '<mo>−</mo>' + YREF)}</mrow></mfrac><mo>)</mo></mrow>${PCT}`,
+      imp: `<mtext>Miglioramento</mtext><mo>=</mo><mrow><mo>(</mo><mn>1</mn><mo>−</mo><mfrac><msub><mi>MAE</mi><mtext>rete</mtext></msub><msub><mi>MAE</mi><mtext>rif</mtext></msub></mfrac><mo>)</mo></mrow>${PCT}`,
+      pers: `<msubsup><mover accent="true"><mi>y</mi><mo>^</mo></mover><mi>t</mi><mtext>pers</mtext></msubsup><mo>=</mo><msub><mi>y</mi><mrow><mi>t</mi><mo>−</mo><mi>TL</mi></mrow></msub>`,
+      yest: `<msubsup><mover accent="true"><mi>y</mi><mo>^</mo></mover><mi>t</mi><mtext>ieri</mtext></msubsup><mo>=</mo><msub><mi>y</mi><mrow><mi>t</mi><mo>−</mo><mn>24</mn><mtext> h</mtext></mrow></msub>`,
+      nmaeS: `<msub><mi>nMAE</mi><mi>s</mi></msub><mo>=</mo><mfrac><msub><mi>MAE</mi><mi>s</mi></msub>${PBAR('<mi>s</mi>')}</mfrac>${PCT}`,
+      wmean: `<mi>x̄</mi><mo>=</mo><mfrac><mrow>${DS('<msub><mi>x</mi><mi>s</mi></msub>')}</mrow><mrow>${DS('')}</mrow></mfrac>`,
+      nmaeT: `<mi>nMAE</mi><mo>=</mo><mfrac><mrow><mfrac><mrow>${DS('<msub><mi>MAE</mi><mi>s</mi></msub>')}</mrow><mrow>${DS('')}</mrow></mfrac></mrow>${PBAR('<mtext>tot</mtext>')}</mfrac>${PCT}`,
+    };
+    const math = ml => { const d = document.createElement('div'); d.className = 'formula-math'; d.innerHTML = `<math xmlns="http://www.w3.org/1998/Math/MathML" display="block">${ml}</math>`; return d; };
+    const legend = 'yᵢ = misura, ŷᵢ = previsione, N = numero di campioni di test.';
+    view.append(card('Metriche', 'Formule usate per tutte le tabelle e i grafici; ogni metrica è calcolata prima stagione per stagione, sugli stessi campioni di test per la rete e per i riferimenti.', h('div', { class: 'prose' },
       h('dl', { class: 'defs' },
-        h('dt', null, 'MAE'), h('dd', null, 'Errore assoluto medio: media di |previsto − misurato| su tutti i campioni di test (kW, o kWh per ora nell\'Abruzzo).'),
-        h('dt', null, 'RMSE'), h('dd', null, 'Radice dell\'errore quadratico medio: pesa di più gli errori grandi.'),
-        h('dt', null, 'R²'), h('dd', null, '1 − (somma degli errori al quadrato) / (somma degli scarti della misura dalla sua media). 1 = perfetto, 0 = come prevedere sempre la media. Il confronto con la media è facile da battere: per questo le reti sono giudicate soprattutto con lo skill score (sotto).'),
-        h('dt', null, 'Skill score'), h('dd', null,
-          h('div', { class: 'formula' }, 'SS = 1 − Σ (yᵢ − ŷᵢ)² / Σ (yᵢ − y_rif,ᵢ)²'),
-          h('div', null, 'yᵢ = misura, ŷᵢ = previsione della rete, y_rif,ᵢ = previsione del riferimento ingenuo, sugli stessi campioni di test; il risultato è in %. Ha la stessa forma dell\'R², ma al posto della media c\'è un vero rivale: la persistenza (ultimo valore noto) per Generation data, la stessa ora del giorno prima per l\'Abruzzo. SS = 0: la rete fa come il riferimento; SS > 0: fa meglio; SS = 100 %: previsione perfetta; SS < 0: fa peggio. Calcolato stagione per stagione e poi mediato sulle stagioni.')),
-        h('dt', null, 'nMAE'), h('dd', null, 'MAE diviso una potenza di riferimento, in %: la potenza nominale (995,67 kWp per l\'Abruzzo), la potenza massima misurata (Generation data, nominale non nota) oppure la potenza media misurata nel test. Spiegazione completa più sotto.'),
+        h('dt', null, 'MAE'), h('dd', null, math(FM.mae),
+          h('div', null, 'Errore assoluto medio, in kW (kWh per ora nell\'Abruzzo). ' + legend)),
+        h('dt', null, 'RMSE'), h('dd', null, math(FM.rmse),
+          h('div', null, 'Radice dell\'errore quadratico medio: pesa di più gli errori grandi.')),
+        h('dt', null, 'R²'), h('dd', null, math(FM.r2),
+          h('div', null, 'ȳ = media della misura nei campioni di test. 1 = perfetto, 0 = come prevedere sempre la media. Il confronto con la media è facile da battere: per questo le reti sono giudicate soprattutto con lo skill score.')),
+        h('dt', null, 'Skill score'), h('dd', null, math(FM.ss),
+          h('div', null, 'yᵢʳⁱᶠ = previsione del riferimento ingenuo sugli stessi campioni: la persistenza (ultimo valore noto) per Generation data, la stessa ora del giorno prima per l\'Abruzzo. Ha la stessa forma dell\'R², ma al posto della media c\'è un vero rivale. SS = 0: la rete fa come il riferimento; SS > 0: fa meglio; SS = 100 %: previsione perfetta; SS < 0: fa peggio. Calcolato stagione per stagione; la colonna "media" è la media pesata con i giorni di ogni stagione (formula più sotto).')),
+        h('dt', null, 'Miglioramento'), h('dd', null, math(FM.imp),
+          h('div', null, 'Riduzione del MAE rispetto al riferimento ingenuo. Positivo = la rete è migliore.')),
+        h('dt', null, 'nMAE'), h('dd', null, 'MAE diviso la potenza media misurata del periodo a cui si riferisce l\'errore, in %. Formule e valori nel riquadro più sotto.'),
         h('dt', null, 'MAPE diurno'), h('dd', null, 'Errore percentuale medio solo sui campioni "diurni": misura > 10 kWh nell\'Abruzzo, > 5 % del massimo della stagione nell\'esogena (come negli script).'),
         h('dt', null, 'wMAPE diurno'), h('dd', null, 'Somma degli errori assoluti diviso somma delle misure, sugli stessi campioni diurni: meno sensibile ai valori piccoli.'),
-        h('dt', null, 'Persistenza'), h('dd', null, 'Previsione ingenua "il valore resta quello dell\'ultimo istante noto": la misura di TL passi prima, cioè l\'ultimo dato disponibile quando la rete fa la previsione. Nell\'Abruzzo è usata solo per TL ≤ ' + ABR_PERS_MAX_TL + ' h (vedi sotto).'),
-        h('dt', null, 'Stessa ora di ieri'), h('dd', null, 'Previsione ingenua con la misura di 24 ore prima (solo Abruzzo, dati orari). È il riferimento principale dell\'Abruzzo per ogni TL.'),
+        h('dt', null, 'Persistenza'), h('dd', null, math(FM.pers),
+          h('div', null, 'Previsione ingenua "il valore resta quello dell\'ultimo istante noto": la misura di TL passi prima, cioè l\'ultimo dato disponibile quando la rete fa la previsione. Nell\'Abruzzo è usata solo per TL ≤ ' + ABR_PERS_MAX_TL + ' h (vedi sotto).')),
+        h('dt', null, 'Stessa ora di ieri'), h('dd', null, math(FM.yest),
+          h('div', null, 'Previsione ingenua con la misura di 24 ore prima (solo Abruzzo, dati orari). È il riferimento principale dell\'Abruzzo per ogni TL.')),
         h('dt', null, 'Misura traslata di 1 passo'), h('dd', null, 'La misura spostata in avanti di un passo (1 ora nell\'Abruzzo, 5 minuti su Generation data), disegnata nei grafici come riferimento visivo. Con TL > 1 non è una previsione realizzabile, perché quel valore non è ancora noto quando si fa la previsione: per questo non entra nelle tabelle di miglioramento.'),
-        h('dt', null, 'Miglioramento'), h('dd', null, '1 − MAE rete / MAE riferimento, in %. Positivo = la rete è migliore.'),
         h('dt', null, 'Analisi del ritardo'), h('dd', null, 'MAE tra la previsione al tempo t e la misura al tempo t − k, per vari k. Il minimo a k = 0 indica una previsione in fase; il minimo a k = TL indica che la rete ripete l\'ultimo valore noto.'),
       ))));
-    const exA = abrHasData(abrPref) ? abrVal(abrPref, 'mae', 'mean') : null, exE = exoVal(exoPref, 'mae', 'mean'), rb = bestReg(usedRun());
-    view.append(card('Che cos\'è il MAE normalizzato (nMAE)', null, h('div', { class: 'prose' },
-      h('p', null, `Il MAE dice di quanto sbaglia in media un modello, nell'unità della grandezza prevista (kW o kWh). Dipende però dalla taglia dell'impianto: 25 kW di errore su un impianto da ${fmt(P_NOM, 2)} kWp non pesano come 25 kW su uno da 330 kW. Il MAE normalizzato divide l'errore per una potenza di riferimento e lo esprime in percentuale, così modelli su impianti diversi diventano confrontabili.`),
-      h('div', { class: 'formula' }, 'nMAE = MAE / P_rif × 100 %'),
-      h('p', null, 'Il risultato cambia con il riferimento scelto, ed è una scelta da dichiarare nella tesi:'),
+    const pGD = pooledMean(EXO.seasons, 'p_mean', 'n'), pGD3 = pooledMean(EXOJ.seasons, 'p_mean', 'n');
+    const pAbr = pooledMean(ABR.seasons, 'p_mean', 'n_valid'), pAbrP = pooledMean(ABR.seasons, 'p_mean_prod', 'n_prod');
+    const dayRows = ABR.seasons.map(s => ({ ds: DS_ABR, s: s.label, d: s.days, p: s.p_mean, pp: s.p_mean_prod }))
+      .concat(EXO.seasons.map(s => ({ ds: DS_GD, s: s.label, d: s.days, p: s.p_mean, pp: null })));
+    view.append(card('MAE normalizzato (nMAE) e medie sulle stagioni', null, h('div', { class: 'prose' },
+      h('p', null, `Il MAE dice di quanto sbaglia in media un modello, nell'unità della grandezza prevista (kW o kWh). Dipende però dalla taglia dell'impianto: 25 kW di errore su un impianto da ${fmt(P_NOM, 2)} kWp non pesano come 25 kW su uno da ${fmt(P_NOM_GD, 0)} kWp. Il MAE normalizzato divide l'errore per la potenza media misurata nel periodo a cui l'errore si riferisce e lo esprime in percentuale.`),
+      h('p', null, h('b', null, 'Una stagione. '), 'Il test è una sola stagione: si usa la potenza media di quella stagione, calcolata su tutto il suo foglio (non solo sui giorni di test).'),
+      math(FM.nmaeS),
+      h('p', null, h('b', null, 'Più stagioni insieme (colonne "media"). '), 'Il MAE medio pesato con i giorni viene diviso per la potenza media di tutti i fogli insieme, cioè dell\'intero periodo di test:'),
+      math(FM.nmaeT),
       h('ul', null,
-        h('li', null, h('b', null, 'Potenza nominale (o di riferimento). '), `Per l'Abruzzo è ${fmt(P_NOM, 2)} kWp. Per Generation data la potenza nominale non è nota, quindi si usa la potenza massima misurata, ${fmt(P_MAX, 1)} kW. ` +
-          (exA != null ? `Esempio: ${abrPref.id} ha MAE medio ${fmt(exA, 2)} kWh → ${fmt(100 * exA / P_NOM, 2)} % di ${fmt(P_NOM, 2)} kWp; ${exoPref.id} ha MAE ${fmt(exE, 2)} kW → ${fmt(100 * exE / P_MAX, 2)} % di ${fmt(P_MAX, 1)} kW.` : '')),
-        h('li', null, h('b', null, 'Potenza media misurata nel test. '), `È la definizione usata dallo script di regressione (colonna nMAE di metriche.txt: ${fmt(rb.nmae, 2)} % per ${rb.label}). Nell'Abruzzo la media include le ore notturne a produzione nulla, mentre Generation data non contiene la notte: per questo le due normalizzazioni possono dare classifiche diverse tra i dataset.`),
-      ),
+        h('li', null, `Reti di Generation data a stagioni separate: 11 fogli, cioè tutto il dataset, P̄ = ${fmt(pGD, 2)} kW.`),
+        h('li', null, `Reti di Generation data ad anni uniti: i fogli dell'anno 3, cioè un anno intero, P̄ = ${fmt(pGD3, 2)} kW.`),
+        h('li', null, `Regressione: il test è estratto a caso da tutto il dataset, quindi P̄ = potenza media di tutto il dataset, ${fmt(REG.p_mean, 2)} kW.`),
+        h('li', null, `Abruzzo, 4 stagioni: P̄ = ${fmt(pAbr, 1)} kW su tutte le ore, ${fmt(pAbrP, 1)} kW sulle ore con produzione.`)),
+      h('p', null, h('b', null, 'Abruzzo: due varianti. '), 'I dati orari comprendono la notte. "Tutte le ore" usa la media con le notti, coerente con il MAE, che è calcolato su tutte le ore del test; "ore di produzione" usa la media delle sole ore con energia > 0. Generation data non contiene la notte, quindi ha una sola variante: per confrontare i due dataset alla pari conviene usare quella dell\'Abruzzo sulle ore di produzione.'),
+      h('p', null, h('b', null, 'Media pesata. '), 'Tutte le colonne "media" (MAE, RMSE, R², skill score, miglioramento, MAPE) sono medie delle stagioni pesate con il numero di giorni di ciascuna:'),
+      math(FM.wmean),
+      h('p', null, 'dₛ = giorni della stagione s: per Generation data la colonna "Giorni (circa)" del foglio Riepilogo, per l\'Abruzzo le ore del foglio divise per 24. Una stagione lunga conta quindi più di una corta.'),
+      tableToggle('Mostra giorni e potenza media di ogni stagione', table([
+        { key: 'ds', label: 'Dataset' }, { key: 's', label: 'Stagione' }, { key: 'd', label: 'Giorni', num: true, fmt: v => fmt(v, 1) },
+        { key: 'p', label: 'Potenza media, tutte le ore [kW]', num: true, fmt: v => fmt(v, 2) },
+        { key: 'pp', label: 'Potenza media, ore di produzione [kW]', num: true, fmt: v => v == null ? '—' : fmt(v, 2) }], dayRows)),
       h('p', null, 'Nota: un\'energia in kWh prodotta in un\'ora equivale alla potenza media in kW in quell\'ora, quindi gli errori orari dell\'Abruzzo si leggono anche come kW medi.'))));
     view.append(card('Quale riferimento ingenuo, e perché', null, h('div', { class: 'prose' },
       h('p', null, 'La persistenza classica (misura di TL passi prima) è un buon riferimento solo se TL è breve rispetto al ciclo giornaliero. Nell\'Abruzzo, con dati orari e TL = 12 h, la "previsione" per mezzogiorno è il valore di mezzanotte e quella per mezzanotte è il picco di mezzogiorno: i picchi finiscono di notte, l\'errore della persistenza diventa enorme e la rete sembra migliore di quanto sia.'),
@@ -2142,9 +2228,9 @@
       ))));
     view.append(card('Dati e cautele', null, h('div', { class: 'prose' }, h('ul', null,
       h('li', null, 'Regressione: divisione train/test casuale senza seed, quindi ogni run dà numeri leggermente diversi. Il run usato nella tesi è ' + REG.used_run + '.'),
-      h('li', null, 'Abruzzo: le metriche sono ricalcolate dai file Risultati_<stagione>.csv della riesecuzione di tutte le configurazioni (26/10/2026). Metrics.txt contiene esecuzioni precedenti ed è superato: non è usato. I test durano circa 9 giorni per stagione. In Estate 2020 il test contiene un buco di circa 17 ore riempito per interpolazione lineare.'),
+      h('li', null, 'Abruzzo: le metriche sono ricalcolate dai file Risultati_<stagione>.csv della riesecuzione di tutte le configurazioni (26/10/2026). I test durano circa 9 giorni per stagione. Dati mancanti nei fogli: 12 ore in Primavera 2020, 22 in Estate 2020, 6 in Primavera 2021, 3 in Estate 2021, sempre a blocchi di ore consecutive. Solo un blocco cade in un periodo di test: in Estate 2020 mancano le 14 ore dal 21/09/2020 alle 21:00 al 22/09/2020 alle 10:00 (la notte e la mattina). Gli script le riempiono per interpolazione lineare, quindi lì la "misura" è una rampa da 0 kWh (ore 20) a 138 kWh (ore 11), anche durante la notte.'),
       h('li', null, 'Generation_data non ha data e ora: giorni e stagioni sono ricostruiti (foglio Riepilogo) e il passo di 5 minuti è una stima. Le notti non ci sono.'),
-      h('li', null, 'Le medie "sulle stagioni" sono medie semplici delle metriche di ogni stagione.'),
+      h('li', null, 'Le medie "sulle stagioni" sono medie delle metriche di ogni stagione pesate con i giorni (vedi il riquadro sul MAE normalizzato).'),
     ))));
     view.append(card('Materiale non mostrato', null, h('div', { class: 'prose' },
       h('p', null, 'Le prove scartate durante il lavoro e le copie duplicate dei grafici non compaiono nella dashboard.'))));

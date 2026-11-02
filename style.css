@@ -390,3 +390,8 @@ body.editing .site-foot { padding-bottom: 200px; }
   dl.defs { grid-template-columns: 1fr; }
   dl.defs dd { margin-bottom: 6px; }
 }
+
+/* formulas (MathML, drawn by the browser) */
+.formula-math { margin: 8px 0 10px; padding: 8px 14px; background: var(--surface-2); border-radius: 8px; overflow-x: auto; color: var(--text-primary); }
+.formula-math math { font-family: "Cambria Math", "STIX Two Math", "Latin Modern Math", "Times New Roman", serif; font-size: 1.15em; }
+.defs dd > .formula-math { display: inline-block; max-width: 100%; }
