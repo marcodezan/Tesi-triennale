@@ -472,6 +472,210 @@
     return ks[best];
   }
 
+  // ================================================================== VIEW: hidden states, LSTMVis style
+  // The scripts export, for the last season they process, the LSTM output h (one vector per test sample, at the last step
+  // of the window) to FV_<season>.hdf5. build_dashboard.py turns each export into states/<key>.js (int8 = 127·h),
+  // loaded here only when the network is opened. As in LSTMVis: select an interval, the units that stay above a threshold
+  // during it are highlighted, and the rest of the test is searched for the moments when the same units are on together.
+  const VIS = D.lstmvis || [];
+  const VIS_FAM = { abr: 'LSTM endogena', exo: 'LSTM esogena', endo: 'LSTM endogena' };
+  const visCache = {};
+  function loadStates(e) {
+    if (visCache[e.key]) return visCache[e.key];
+    return (visCache[e.key] = new Promise((resolve, reject) => {
+      const done = () => {
+        const r = window.LSTMVIS_STATES && window.LSTMVIS_STATES[e.key];
+        if (!r) { delete visCache[e.key]; reject(new Error('dati non trovati in ' + e.file)); return; }
+        if (!r.H) {
+          const bin = atob(r.h), H = new Int8Array(bin.length);
+          for (let i = 0; i < bin.length; i++) H[i] = bin.charCodeAt(i);      // bytes > 127 wrap to negative values
+          r.H = H; r.h = null;
+          const mr = mean(r.real), U = r.u, N = r.n;                            // correlation of each unit with the measured power
+          let vr = 0; for (let t = 0; t < N; t++) vr += (r.real[t] - mr) ** 2;
+          r.corr = [];
+          for (let u = 0; u < U; u++) {
+            let m = 0; for (let t = 0; t < N; t++) m += H[t * U + u]; m /= N;
+            let cov = 0, vu = 0;
+            for (let t = 0; t < N; t++) { const d = H[t * U + u] - m; cov += d * (r.real[t] - mr); vu += d * d; }
+            r.corr.push(vu && vr ? cov / Math.sqrt(vu * vr) : null);
+          }
+        }
+        resolve(r);
+      };
+      if (window.LSTMVIS_STATES && window.LSTMVIS_STATES[e.key]) { done(); return; }
+      const s = document.createElement('script');
+      s.src = e.file + '?v=' + encodeURIComponent(D.build.time);
+      s.onload = done;
+      s.onerror = () => { delete visCache[e.key]; reject(new Error('impossibile caricare ' + e.file)); };
+      document.head.append(s);
+    }));
+  }
+  function visLabel(e) { return `${VIS_FAM[e.fam]} · ${e.config} · ${e.season_label} · ${e.units} unità`; }
+
+  function viewLstmvis(ds) {
+    const c = C();
+    const list = VIS.filter(e => ds === 'abr' ? e.fam === 'abr' : e.fam !== 'abr');
+    const isAbr = ds === 'abr';
+    view.append(viewHead(isAbr ? DS_ABR : DS_GD, 'Stati interni (LSTMVis)',
+      'Che cosa "vedono" le unità nascoste della rete durante il test, con il metodo di LSTMVis: scegli un intervallo in cui succede qualcosa (per esempio la salita del mattino), la pagina evidenzia le unità che restano accese per tutto l\'intervallo e cerca nel resto del test i momenti in cui le stesse unità si accendono insieme.'));
+    if (!list.length) { view.append(emptyBox('Nessuno stato interno esportato per questo dataset.')); return; }
+    const kK = 'visKey_' + ds;
+    const pref = isAbr ? list.find(e => e.config === abrPref.id) : list.find(e => e.fam === 'exo' && e.config === exoPref.id);
+    const e = list.find(x => x.key === S[kK]) || pref || list[0];
+    const thr = Number(S.visThr) || 0.3, sign = S.visSign === 'neg' ? -1 : 1, frac = Number(S.visMatch) || 1;
+    const thrIn = h('input', { type: 'range', min: '0.05', max: '0.8', step: '0.05', value: String(thr), 'aria-label': 'Soglia di attivazione' });
+    const thrOut = h('b', null, fmt(thr, 2));
+    thrIn.addEventListener('input', () => { thrOut.textContent = fmt(Number(thrIn.value), 2); });
+    thrIn.addEventListener('change', () => set('visThr', Number(thrIn.value)));
+    view.append(filters(
+      selectCtl('Rete', list.map(x => ({ value: x.key, label: visLabel(x) })), e.key, v => set(kK, v)),
+      h('label', { class: 'ctl' }, h('span', null, 'Soglia di attivazione ', thrOut), thrIn),
+      segCtl('Unità accese quando', [{ value: 'pos', label: 'h ≥ soglia' }, { value: 'neg', label: 'h ≤ −soglia' }], sign > 0 ? 'pos' : 'neg', v => set('visSign', v)),
+      selectCtl('Corrispondenza', [{ value: 1, label: 'tutte le unità selezionate accese' }, { value: 0.8, label: 'almeno l\'80 %' }, { value: 0.6, label: 'almeno il 60 %' }], frac, v => set('visMatch', Number(v))),
+      segCtl('Stati', [{ value: 'lines', label: 'Linee' }, { value: 'heat', label: 'Mappa di calore' }], S.visView === 'heat' ? 'heat' : 'lines', v => set('visView', v)),
+      checkCtl('Spente subito prima e dopo', S.visPad, v => set('visPad', v)),
+    ));
+    const host = h('div', null, emptyBox('Caricamento degli stati…'));
+    view.append(host);
+    loadStates(e).then(r => { if (document.body.contains(host)) drawLstmvis(host, e, r, { thr, sign, frac }); })
+      .catch(err => { host.textContent = ''; host.append(emptyBox('Non è stato possibile caricare gli stati di questa rete.', err.message)); });
+  }
+
+  function drawLstmvis(host, e, r, o) {
+    const c = C(), N = r.n, U = r.u, H = r.H, isAbr = e.fam === 'abr';
+    const lim = Math.round(o.thr * 127);
+    const on = (t, u) => o.sign * H[t * U + u] >= lim;
+    const selK = 'visSel_' + e.key;
+    let sel = Array.isArray(S[selK]) ? S[selK].map(Number) : null;
+    if (!sel || !(sel[0] >= 0 && sel[1] < N && sel[0] <= sel[1])) {
+      // default: the interval (3 h in the Abruzzo, 1 h on Generation data) with the most units on all the time
+      const w = isAbr ? 3 : 12;
+      let best = -1, k0 = 0;
+      for (let t = 0; t + w <= N; t++) {
+        let n = 0;
+        for (let u = 0; u < U; u++) { let ok = true; for (let j = t; j < t + w && ok; j++) ok = on(j, u); if (ok) n++; }
+        if (n > best) { best = n; k0 = t; }
+      }
+      sel = [k0, Math.min(N - 1, k0 + w - 1)];
+    }
+    const [a, b] = sel;
+    const units = [];
+    for (let u = 0; u < U; u++) {
+      let ok = true;
+      for (let t = a; t <= b && ok; t++) ok = on(t, u);
+      if (ok && S.visPad) ok = (a === 0 || !on(a - 1, u)) && (b === N - 1 || !on(b + 1, u));
+      if (ok) units.push(u);
+    }
+    const need = Math.max(1, Math.ceil(o.frac * units.length - 1e-9));
+    const cnt = new Array(N).fill(0);
+    if (units.length) for (let t = 0; t < N; t++) { let k = 0; for (const u of units) if (on(t, u)) k++; cnt[t] = k; }
+    const runs = [];
+    if (units.length) for (let t = 0; t < N;) {
+      if (cnt[t] < need) { t++; continue; }
+      let s = t; while (t < N && cnt[t] >= need) t++;
+      const pr = r.real.slice(s, t);
+      runs.push({ s, e: t - 1, len: t - s, p: mean(pr), self: s <= b && t - 1 >= a });
+    }
+    const step = isAbr ? 60 : EXO.step_min;                                    // minutes per test sample
+    const xl = i => isAbr ? r.x[i] : `riga ${r.x[i]}`;
+    const durTxt = n => { const m = n * step; return m >= 60 ? `${fmt(m / 60, m % 60 ? 1 : 0)} h` : `${m} min`; };
+    host.textContent = '';
+
+    // --- in short
+    const others = runs.filter(x => !x.self);
+    host.append(h('div', { class: 'grid three' },
+      tile('Rete', `${VIS_FAM[e.fam]} · ${e.season_label}`, e.config, null, [fact('unità nascoste', fmt(U, 0)), fact('campioni di test', fmt(N, 0))]),
+      tile('Intervallo selezionato', `${xl(a)} → ${xl(b)}`, fmt(b - a + 1, 0), 'campioni', [fact('durata', durTxt(b - a + 1)), fact('potenza media misurata', fmt(mean(r.real.slice(a, b + 1)), 1) + (isAbr ? ' kWh' : ' kW'))]),
+      tile('Unità selezionate', `accese (${o.sign > 0 ? 'h ≥ ' : 'h ≤ −'}${fmt(o.thr, 2)}) per tutto l'intervallo`, fmt(units.length, 0), `su ${U}`,
+        [fact('altre corrispondenze', fmt(others.length, 0)), fact('tempo in corrispondenza', fmt(100 * cnt.filter(k => units.length && k >= need).length / N, 1) + ' %')], units.length > 0),
+    ));
+    if (!units.length) host.append(callout('Nessuna unità resta accesa per tutto l\'intervallo: abbassa la soglia, accorcia l\'intervallo o cambia il segno.', true));
+
+    // --- selection by numbers (also for touch screens)
+    const inA = h('input', { type: 'number', min: '1', max: String(N), value: String(a + 1) }), inB = h('input', { type: 'number', min: '1', max: String(N), value: String(b + 1) });
+    const apply = () => { const p = Math.max(1, Math.min(N, Number(inA.value) || 1)) - 1, q = Math.max(1, Math.min(N, Number(inB.value) || 1)) - 1; set(selK, [Math.min(p, q), Math.max(p, q)]); };
+    inA.addEventListener('change', apply); inB.addEventListener('change', apply);
+    const fig = chartDiv(''); fig.style.height = (window.innerWidth < 700 ? 620 : 700) + 'px';
+    host.append(card('Potenza, stati nascosti e corrispondenze',
+      'Trascina orizzontalmente su uno dei tre grafici per scegliere un intervallo (fascia scura). Le fasce chiare nel grafico in alto sono le corrispondenze: i momenti in cui le unità selezionate sono accese insieme. Al centro gli stati: in grigio tutte le unità, in verde quelle selezionate; in basso la quota di unità selezionate accese in ogni campione.',
+      fig, h('div', { class: 'inline-ctl', style: 'gap:12px;align-items:flex-end;flex-wrap:wrap' },
+        h('label', { class: 'ctl' }, h('span', null, 'Da campione'), inA), h('label', { class: 'ctl' }, h('span', null, 'a campione'), inB),
+        h('button', { type: 'button', class: 'link-btn', onclick: () => { delete S[selK]; save(); render(true); } }, 'Torna all\'esempio'))));
+
+    const X = r.x;
+    // half a sample on each side, so that a band of one sample is visible (dates: ± 30 minutes)
+    const p2 = n => String(n).padStart(2, '0');
+    const dshift = (sx, m) => { const d = new Date(new Date(sx.replace(' ', 'T')).getTime() + m * 60e3); return `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())} ${p2(d.getHours())}:${p2(d.getMinutes())}`; };
+    const x0 = s => isAbr ? dshift(X[s], -30) : X[s] - 0.5, x1 = t => isAbr ? dshift(X[t], 30) : X[t] + 0.5;
+    const band = (s, t, col, op) => ({ type: 'rect', xref: 'x', yref: 'paper', y0: 0.66, y1: 1, layer: 'below', line: { width: 0 }, fillcolor: col, opacity: op, x0: x0(s), x1: x1(t) });
+    const shapes = runs.filter(x => !x.self).slice(0, 400).map(x => band(x.s, x.e, c.s4, 0.22));
+    shapes.push(band(a, b, c.text1, 0.28));
+    shapes.push({ type: 'rect', xref: 'x', yref: 'paper', y0: 0, y1: 0.62, layer: 'below', line: { width: 0 }, fillcolor: c.text1, opacity: 0.1,
+      x0: x0(a), x1: x1(b) });
+    const unit = isAbr ? 'kWh' : 'kW';
+    const tr = [
+      lineT(X, r.real, 'Misurata', c[ROLE.measured], { xaxis: 'x', yaxis: 'y', hovertemplate: `<b>%{y:.1f} ${unit}</b> misurata<extra></extra>` }),
+      lineT(X, r.pred, 'Prevista', c[ROLE.model], { xaxis: 'x', yaxis: 'y', line: { color: c[ROLE.model], width: 1.5 }, hovertemplate: `<b>%{y:.1f} ${unit}</b> prevista<extra></extra>` }),
+    ];
+    const inSel = new Set(units);
+    const order = [...Array(U).keys()].sort((p, q) => (r.corr[q] ?? -2) - (r.corr[p] ?? -2));
+    if (S.visView === 'heat') {
+      const z = order.map(u => { const row = new Array(N); for (let t = 0; t < N; t++) row[t] = H[t * U + u] / 127; return row; });
+      tr.push({ type: 'heatmap', x: X, y: order.map(u => (inSel.has(u) ? '● ' : '') + 'u' + u), z, xaxis: 'x', yaxis: 'y2', zmin: -1, zmax: 1,
+        colorscale: toScale(c.div), showscale: false, hovertemplate: '%{y}<br>h = %{z:.2f}<extra></extra>' });
+    } else {
+      const gx = [], gy = [];
+      for (let u = 0; u < U; u++) { if (inSel.has(u)) continue; for (let t = 0; t < N; t++) { gx.push(X[t]); gy.push(H[t * U + u] / 127); } gx.push(null); gy.push(null); }
+      tr.push({ type: 'scattergl', mode: 'lines', x: gx, y: gy, xaxis: 'x', yaxis: 'y2', name: 'Altre unità', line: { color: c.neutral, width: 1 }, opacity: 0.35, hoverinfo: 'skip' });
+      const shown = units.slice(0, 40);
+      for (const u of shown) {
+        const y = new Array(N); for (let t = 0; t < N; t++) y[t] = H[t * U + u] / 127;
+        tr.push({ type: 'scattergl', mode: 'lines', x: X, y, xaxis: 'x', yaxis: 'y2', name: 'u' + u, showlegend: false, line: { color: c.s3, width: 1.4 },
+          hovertemplate: `unità ${u}: <b>%{y:.2f}</b><extra></extra>` });
+      }
+      tr.push(lineT([X[0], X[N - 1]], [o.sign * o.thr, o.sign * o.thr], 'Soglia', c.text2, { xaxis: 'x', yaxis: 'y2', line: { color: c.text2, width: 1, dash: 'dot' }, hoverinfo: 'skip', showlegend: false }));
+    }
+    tr.push({ type: 'bar', x: X, y: cnt.map(k => units.length ? 100 * k / units.length : 0), xaxis: 'x', yaxis: 'y3', name: 'Unità selezionate accese',
+      marker: { color: cnt.map(k => units.length && k >= need ? c.s4 : c.neutral) }, showlegend: false, hovertemplate: '<b>%{y:.0f} %</b> delle unità selezionate accese<extra></extra>' });
+    const ax = extra => Object.assign(axis(c), extra);
+    plot(fig, tr, {
+      dragmode: 'select', selectdirection: 'h', hovermode: 'x', bargap: 0, margin: { l: 64, r: 16, t: 36, b: 48 }, shapes,
+      xaxis: ax({ anchor: 'y3', type: isAbr ? 'date' : 'linear', title: { text: isAbr ? 'Data e ora' : 'Riga del foglio (passo di circa 5 minuti)' } }),
+      yaxis: ax({ domain: [0.68, 1], title: { text: `Potenza [${unit}]` }, rangemode: 'tozero' }),
+      yaxis2: ax({ domain: [0.2, 0.64], title: { text: S.visView === 'heat' ? 'Unità (per correlazione)' : 'Stato h' }, range: S.visView === 'heat' ? undefined : [-1, 1],
+        showticklabels: S.visView !== 'heat' || U <= 40, tickfont: { size: 9 } }),
+      yaxis3: ax({ domain: [0, 0.15], title: { text: '% accese' }, range: [0, 100], tickvals: [0, 50, 100] }),
+    }, 'lstmvis_' + e.key);
+    fig.on('plotly_selected', ev => {
+      const rg = ev && ev.range && (ev.range.x || Object.values(ev.range)[0]);
+      if (!rg) return;
+      let lo = rg[0], hi = rg[1];
+      if (isAbr) { lo = String(lo).slice(0, 16); hi = String(hi).slice(0, 16); }
+      let p = -1, q = -1;
+      for (let t = 0; t < N; t++) { if (X[t] >= lo && X[t] <= hi) { if (p < 0) p = t; q = t; } }
+      if (p < 0) return;
+      set(selK, [p, q]);
+    });
+
+    // --- tables
+    const urows = units.map(u => {
+      let s = 0; for (let t = a; t <= b; t++) s += H[t * U + u]; let k = 0; for (let t = 0; t < N; t++) if (on(t, u)) k++;
+      return { u, m: s / (b - a + 1) / 127, corr: r.corr[u], onp: 100 * k / N };
+    });
+    const g = h('div', { class: 'grid two' }); host.append(g);
+    g.append(card(`Unità selezionate (${units.length})`, 'Media di h nell\'intervallo, quota del test in cui l\'unità è accesa e correlazione con la potenza misurata su tutto il test.',
+      units.length ? table([{ key: 'u', label: 'Unità (da 0)', num: true }, { key: 'm', label: 'h medio nell\'intervallo', num: true, fmt: v => fmtS(v, 2) },
+        { key: 'onp', label: 'Accesa nel test [%]', num: true, fmt: v => fmt(v, 1) }, { key: 'corr', label: 'Correlazione con la potenza', num: true, fmt: v => fmtS(v, 2) }], urows, { sortKey: 'onp' })
+        : emptyBox('Nessuna unità selezionata.')));
+    const mrows = runs.map(x => ({ s: xl(x.s), e2: xl(x.e), len: x.len, dur: durTxt(x.len), p: x.p, self: x.self ? 'sì' : '', _hl: x.self }))
+      .sort((p, q) => q.len - p.len).slice(0, 60);
+    g.append(card(`Corrispondenze (${runs.length})`, 'Tratti di test in cui le unità selezionate sono accese insieme; le più lunghe in alto. Se cadono tutte su momenti simili (per esempio ogni salita del mattino), quelle unità probabilmente rappresentano quel comportamento.',
+      runs.length ? table([{ key: 's', label: 'Inizio' }, { key: 'e2', label: 'Fine' }, { key: 'len', label: 'Campioni', num: true }, { key: 'dur', label: 'Durata' },
+        { key: 'p', label: `Potenza media [${unit}]`, num: true, fmt: v => fmt(v, 1) }, { key: 'self', label: 'Selezione' }], mrows, { sortKey: null, scroll: true })
+        : emptyBox('Nessuna corrispondenza.')));
+    host.append(h('p', { class: 'note' }, `Stato h = uscita dello strato LSTM all'ultimo passo della finestra di ogni campione di test (${e.season_label}, ultima stagione elaborata dallo script: le altre stagioni non sono state esportate). Valori salvati con una precisione di 1/127. File: ${e.source}; serie: ${e.csv}.`));
+  }
+
   // ------------------------------------------------------------------ header & tabs
   // One tab per dataset; each dataset has its own pages (sub-tabs). Address: #<tab>/<page>?<parameters>
   const TABS = [
@@ -482,6 +686,7 @@
       { id: 'esogena', label: 'LSTM esogena', render: () => viewGD('exo') },
       { id: 'endogena', label: 'LSTM endogena', render: () => viewGD('endo') },
       { id: 'esplora', label: 'Esplora il test', render: () => viewExplorer('exo') },
+      { id: 'lstmvis', label: 'Stati interni (LSTMVis)', render: () => viewLstmvis('gd') },
       { id: 'architetture', label: 'Architetture', render: () => viewArchitectures('gd') },
       { id: 'grafici', label: 'Grafici originali', render: () => viewGallery('gd') },
     ] },
@@ -489,6 +694,7 @@
       { id: 'confronto', label: 'Confronto tra le configurazioni', render: viewAbruzzo },
       { id: 'dettaglio', label: 'Dettaglio di una configurazione', render: viewAbruzzoDetail },
       { id: 'esplora', label: 'Esplora il test', render: () => viewExplorer('abr') },
+      { id: 'lstmvis', label: 'Stati interni (LSTMVis)', render: () => viewLstmvis('abr') },
       { id: 'architetture', label: 'Architetture', render: () => viewArchitectures('abr') },
       { id: 'grafici', label: 'Grafici originali', render: () => viewGallery('abr') },
     ] },
@@ -2204,6 +2410,7 @@
       h('li', null, h('code', null, 'Generation data/LSTM_ESOGENA/Reti_stagioni_separate/Grafici_*/Risultati_*.csv'), ' e ', h('code', null, 'Generation data/LSTM_ENDOGENA/Reti_con_stagioni_separate/Grafici_*/Risultati_*.csv')),
       h('li', null, h('code', null, 'Generation data/LSTM_ESOGENA/Reti_stagioni_unite/Grafici_ANNI_*/Risultati_*.csv'), ' e ', h('code', null, 'Generation data/LSTM_ENDOGENA/Reti_con_stagioni_unite/Grafici_ANNI_*/Risultati_*.csv')),
       h('li', null, h('code', null, 'Generation data/Generation_data_stagioni_vento_corretto.xlsx'), ' (serie misurate, persistenza)'),
+      h('li', null, h('code', null, 'Grafici_*/FV_<stagione>.hdf5'), ' e ', h('code', null, '.dict'), ' (stati interni esportati dagli script, pagina "Stati interni")'),
     ))));
   }
 
