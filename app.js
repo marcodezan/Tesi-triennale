@@ -52,7 +52,8 @@
   const EMPTY_FAM = { configs: [], seasons: [], pending: [] };
   const ENDO = D.endo_gd || EMPTY_FAM, EXOJ = D.exo_joined || EMPTY_FAM, ENDOJ = D.endo_joined || EMPTY_FAM;
   const GD = { exo: EXO, endo: ENDO, exoJ: EXOJ, endoJ: ENDOJ };
-  const GD_TAG = { exo: 'ESO', endo: 'END', exoJ: 'ESO anni', endoJ: 'END anni' };
+  const GD_TAG = { exo: 'ESO', endo: 'END', exoJ: 'ESO anni', endoJ: 'END anni',
+    exoS: 'ESO stato agg.', endoS: 'END stato agg.', exoJS: 'ESO anni stato agg.', endoJS: 'END anni stato agg.' };
   function gdFam(base, mode) { return mode === 'joined' ? base + 'J' : base; }
   // a season entry as seen with the chosen test samples (joined nets: whole year 3, or the same samples as the single-season nets)
   function gdView(s, samples) {
@@ -82,20 +83,50 @@
   }
   // Generation_data test series are stored compactly (first sheet row + predictions): rebuild them on first use
   const GDP = D.gd_power || {};
-  for (const F of [EXO, ENDO, EXOJ, ENDOJ]) for (const cf of F.configs) for (const [sheet, e] of Object.entries(cf.seasons)) {
-    e._sheet = e.sheet || sheet;
-    const c0 = e.series;
-    if (!c0 || !('i0' in c0)) continue;
-    let cache = null;
-    Object.defineProperty(e, 'series', { configurable: true, enumerable: true, get() {
-      if (!cache) {
-        const p = GDP[e.sheet || sheet], n = c0.pred.length, tl = cf.tl;
-        const idx = new Array(n), real = new Array(n), pers = new Array(n), shift1 = new Array(n);
-        for (let j = 0; j < n; j++) { const i = c0.i0 + j; idx[j] = i; real[j] = p[i - 1]; pers[j] = p[i - 1 - tl]; shift1[j] = p[i - 2]; }
-        cache = { idx, real, pred: c0.pred, pers, shift1 };
-      }
-      return cache;
-    } });
+  function lazySeries(F) {
+    for (const cf of F.configs) for (const [sheet, e] of Object.entries(cf.seasons)) {
+      e._sheet = e.sheet || sheet;
+      const c0 = e.series;
+      if (!c0 || !('i0' in c0)) continue;
+      let cache = null;
+      Object.defineProperty(e, 'series', { configurable: true, enumerable: true, get() {
+        if (!cache) {
+          const p = GDP[e.sheet || sheet], n = c0.pred.length, tl = cf.tl;
+          const idx = new Array(n), real = new Array(n), pers = new Array(n), shift1 = new Array(n);
+          for (let j = 0; j < n; j++) { const i = c0.i0 + j; idx[j] = i; real[j] = p[i - 1]; pers[j] = p[i - 1 - tl]; shift1[j] = p[i - 2]; }
+          cache = { idx, real, pred: c0.pred, pers, shift1 };
+        }
+        return cache;
+      } });
+    }
+  }
+  for (const F of [EXO, ENDO, EXOJ, ENDOJ]) lazySeries(F);
+
+  // Networks with the LSTM state carried on in the test ("_stato_aggiornato" scripts, TL = 1 step).
+  // D.stato[family].nets[i].methods['1'|'2'].seasons[key]: errors of the new forecast (m), of the original network (o)
+  // and of the persistence (p) on the same rows, error per epoch (ep, best epoch) and the forecast series.
+  const ST = D.stato || {};
+  function stFam(fk) { return ST[fk] || { nets: [], scripts: [] }; }
+  // for the explorer: one pseudo-configuration per network and method, with the same series as the original ones
+  const ST_GD = {};
+  for (const fk of ['exo', 'endo', 'exoJ', 'endoJ']) {
+    const configs = [];
+    for (const n of stFam(fk).nets) for (const k of Object.keys(n.methods).sort()) {
+      const seasons = {};
+      for (const [key, e] of Object.entries(n.methods[k].seasons)) seasons[key] = { sheet: e.sheet || key, series: e.series };
+      configs.push({ id: `${n.id} · M${k}`, th: n.th, tl: n.tl, cells: n.cells, preferred: false, seasons });
+    }
+    ST_GD[fk + 'S'] = { configs };
+    lazySeries(ST_GD[fk + 'S']);
+  }
+  const ST_ABR = [];
+  for (const n of stFam('abr').nets) for (const k of Object.keys(n.methods).sort()) {
+    const orig = ABR.configs.find(x => x.id === n.id), seasons = {};
+    for (const [key, e] of Object.entries(n.methods[k].seasons)) {
+      const o = orig && orig.seasons[key] && orig.seasons[key].series;
+      if (o && o.real.length === e.series.pred.length) seasons[key] = { series: Object.assign({}, o, { pred: e.series.pred }) };
+    }
+    ST_ABR.push({ id: `${n.id} · M${k}`, label: `${n.id} · stato agg. M${k}`, th: n.th, tl: n.tl, cells: n.cells, preferred: false, seasons });
   }
   // Abruzzo: the classic persistence (value TL hours before) is used as a reference only up to this horizon
   const ABR_PERS_MAX_TL = 3;
@@ -109,6 +140,7 @@
     exoMetric: 'mae', exoConfig: exoPref.id, exoSeason: 'Estate_3', exoAxis: 'samples', exoPers: true,
     expModel: ABR.configs.some(c => ABR_SEASONS.some(s => c.seasons[s.key].csv)) ? 'abr' : 'exo',
     gdMetric: 'mae', gdSamples: 'last20', gdAxis: 'samples', gdPers: true, gdCells: 64,
+    stBase: 'exo', stMode: 'sep', stMetric_gd: 'mae', stMetric_abr: 'mae', stMb: false,
     cmpMode: 'sep', cmpMetric: 'mae', cmpCells: 64, cmpSeason: 'mean',
     expSeasonAbr: 'Primavera2021', expSeasonExo: 'Estate_3', expCfgsAbr: [abrPref.id], expCfgsExo: ['exo:' + exoPref.id],
     expSlotsAbr: {}, expSlotsExo: {}, expPers: true, expYest: false, expErr: true, expUnit: 'samples',
@@ -685,6 +717,7 @@
       { id: 'regressione', label: 'Regressione', render: viewRegression },
       { id: 'esogena', label: 'LSTM esogena', render: () => viewGD('exo') },
       { id: 'endogena', label: 'LSTM endogena', render: () => viewGD('endo') },
+      { id: 'stato', label: 'Stato aggiornato', render: () => viewStato('gd') },
       { id: 'esplora', label: 'Esplora il test', render: () => viewExplorer('exo') },
       { id: 'lstmvis', label: 'Stati interni (LSTMVis)', render: () => viewLstmvis('gd') },
       { id: 'architetture', label: 'Architetture', render: () => viewArchitectures('gd') },
@@ -693,6 +726,7 @@
     { id: 'abruzzo', label: 'Monomega Abruzzo', subs: [
       { id: 'confronto', label: 'Confronto tra le configurazioni', render: viewAbruzzo },
       { id: 'dettaglio', label: 'Dettaglio di una configurazione', render: viewAbruzzoDetail },
+      { id: 'stato', label: 'Stato aggiornato', render: () => viewStato('abr') },
       { id: 'esplora', label: 'Esplora il test', render: () => viewExplorer('abr') },
       { id: 'lstmvis', label: 'Stati interni (LSTMVis)', render: () => viewLstmvis('abr') },
       { id: 'architetture', label: 'Architetture', render: () => viewArchitectures('abr') },
@@ -1828,6 +1862,227 @@
     ], all, { scroll: true })));
   }
 
+  // ================================================================== VIEW: LSTM state carried on in the test ("stato aggiornato")
+  const ST_METRICS = {
+    gd: [{ value: 'mae', label: 'MAE [kW]', unit: 'kW', d: 2 }, { value: 'nmae', label: 'nMAE sulla potenza media [%]', unit: '%', d: 1 },
+      { value: 'rmse', label: 'RMSE [kW]', unit: 'kW', d: 2 }],
+    abr: [{ value: 'mae', label: 'MAE [kWh]', unit: 'kWh', d: 2 }, { value: 'nmae', label: 'nMAE sulla potenza media, tutte le ore [%]', unit: '%', d: 1 },
+      { value: 'nmae_prod', label: 'nMAE sulla potenza media, ore di produzione [%]', unit: '%', d: 1 }, { value: 'rmse', label: 'RMSE [kWh]', unit: 'kWh', d: 2 }],
+  };
+  const ST_WHO = { o: 'Rete originale', 1: 'Metodo 1', 2: 'Metodo 2', p: 'Persistenza' };
+  function stCol(c, w) { return { o: c.s1, 1: c.s2, 2: c.s3, p: c.neutral }[w]; }
+  // errors of one season; w = 'o' (original network), 'p' (persistence) or a method (1, 2). The original and the
+  // persistence are measured on the rows of the new forecast, which are the same for both methods.
+  function stBlock(n, w, key, samples) {
+    const k = (w === 1 || w === 2) ? String(w) : (n.methods['1'] && n.methods['1'].seasons[key] ? '1' : '2');
+    const e = n.methods[k] && n.methods[k].seasons[key];
+    if (!e) return null;
+    const f = (w === 'o' || w === 'p') ? w : 'm';
+    if (samples === 'last20' && e.m20) return { m: e.m20, o: e.o20, p: e.p20 }[f];
+    return e[f];
+  }
+  function stInfo(isAbr, key) { return (isAbr ? ABR_SINFO[key] : GD_SHEET[key]) || {}; }
+  function stSeasonVal(isAbr, n, w, m, key, samples) {
+    const b = stBlock(n, w, key, samples); if (!b) return null;
+    const i = stInfo(isAbr, key);
+    switch (m) {
+      case 'mae': return b.mae; case 'rmse': return b.rmse;
+      case 'nmae': return i.p_mean ? 100 * b.mae / i.p_mean : null;
+      case 'nmae_prod': return i.p_mean_prod ? 100 * b.mae / i.p_mean_prod : null;
+    }
+    return null;
+  }
+  // mean over the seasons weighted by their days; nMAE = weighted MAE / mean power of those sheets together
+  function stMean(isAbr, n, w, m, keys, samples) {
+    const v = keys.map(k => stSeasonVal(isAbr, n, w, m === 'rmse' ? 'rmse' : 'mae', k, samples));
+    if (v.some(x => x == null)) return null;
+    const mae = wmean(keys.map((k, i) => [v[i], stInfo(isAbr, k).days]));
+    if (m === 'mae' || m === 'rmse') return mae;
+    const p = isAbr ? (m === 'nmae' ? pooledMean(ABR.seasons, 'p_mean', 'n_valid') : pooledMean(ABR.seasons, 'p_mean_prod', 'n_prod'))
+      : pooledMean(keys.map(k => GD_SHEET[k]), 'p_mean', 'n');
+    return mae == null || !p ? null : 100 * mae / p;
+  }
+  function stComplete(n, keys) { return ['1', '2'].every(k => n.methods[k] && keys.every(key => n.methods[k].seasons[key])); }
+  function improve(v, ref) { return v == null || !ref ? null : 100 * (1 - v / ref); }
+
+  function viewStato(ds) {
+    const c = C();
+    const isAbr = ds === 'abr';
+    const base = S.stBase === 'endo' ? 'endo' : 'exo', mode = S.stMode === 'joined' ? 'joined' : 'sep';
+    const fk = isAbr ? 'abr' : gdFam(base, mode), joined = !isAbr && mode === 'joined';
+    const seasons = isAbr ? ABR_SEASONS : GD[fk].seasons;
+    const keys = seasons.map(s => s.key);
+    const samples = joined ? S.gdSamples : null;
+    const fam = stFam(fk), nets = fam.nets;
+    const mets = ST_METRICS[isAbr ? 'abr' : 'gd'];
+    const met = mets.find(m => m.value === S['stMetric_' + ds]) || mets[0];
+    const U = isAbr ? 'kWh' : 'kW';
+    view.append(viewHead(isAbr ? DS_ABR : DS_GD, 'Stato aggiornato nel test',
+      `Versioni delle reti con TL = ${isAbr ? '1 ora' : '1 passo (circa 5 minuti)'} in cui, nel test, la rete riceve un dato misurato alla volta e il suo stato interno prosegue da una previsione all'altra, invece di ripartire da zero a ogni finestra` +
+      (isAbr ? ': lo stato scorre su tutta la stagione, notti comprese.' : ': lo stato scorre per tutta la giornata e riparte all\'inizio del giorno dopo, perché le notti non sono nei dati.'),
+      'Metodo 1: addestramento come la rete originale, su finestre di TH passi sovrapposte che partono dallo stato zero. Metodo 2: addestramento su tratti consecutivi di TH passi, con lo stato che passa da un tratto al successivo e una previsione a ogni passo. Per entrambi si usa la rete dell\'epoca con l\'errore di validazione più basso (validazione = ultimo 10 % del periodo di training, non usato per addestrare); il periodo di test è quello della rete originale.'));
+    const ctl = [];
+    if (!isAbr) ctl.push(segCtl('Rete', [{ value: 'exo', label: 'LSTM esogena' }, { value: 'endo', label: 'LSTM endogena' }], base, v => set('stBase', v)),
+      segCtl('Addestramento', TRAIN_SEG, mode, v => set('stMode', v)));
+    if (joined) ctl.push(segCtl('Campioni di test', SAMPLES_SEG, S.gdSamples, v => set('gdSamples', v)));
+    ctl.push(selectCtl('Metrica', mets, met.value, v => set('stMetric_' + ds, v)));
+    view.append(filters(...ctl));
+    view.append(h('p', { class: 'note', style: 'margin:-6px 0 14px' }, isAbr
+      ? 'Rete originale, metodi 1 e 2 e persistenza sono confrontati sulle stesse ore di test. Le medie sulle stagioni sono pesate con i giorni di ogni stagione.'
+      : trainNote(joined) + ' Rete originale, metodi 1 e 2 e persistenza sono confrontati sulle stesse righe: senza la prima riga di ogni giorno, che le nuove reti non possono prevedere perché a inizio giornata non hanno ancora nessun dato di quel giorno.'));
+    const ready = nets.filter(n => stComplete(n, keys));
+    const pending = fam.scripts.filter(id => !ready.some(n => n.id === id));
+    if (pending.length) view.append(callout(`Script _stato_aggiornato senza risultati completi (non lanciati o ancora in esecuzione): ${pending.join(', ')}.`, true));
+    if (!nets.length) { view.append(emptyBox('Nessun risultato ancora disponibile per queste reti.', 'Quando gli script _stato_aggiornato avranno finito, aggiorna la dashboard.')); return; }
+
+    // --- in short
+    const val = (n, w) => stMean(isAbr, n, w, met.value, keys, samples);
+    const rows = nets.map(n => {
+      const o = val(n, 'o'), m1 = val(n, 1), m2 = val(n, 2), p = val(n, 'p');
+      return { n, id: n.id, th: n.th, cells: n.cells, o, m1, m2, p, d1: improve(m1, o), d2: improve(m2, o), _hl: n.preferred };
+    });
+    const full = rows.filter(r => r.o != null && r.m1 != null && r.m2 != null);
+    view.append(sectionTitle('In sintesi', null, `${ready.length} ${ready.length === 1 ? 'rete' : 'reti'} su ${fam.scripts.length} con entrambi i metodi completi. Valori medi sulle stagioni, pesati con i giorni.`));
+    const tileFor = k => {
+      const d = full.map(r => (k === 1 ? r.d1 : r.d2));
+      const better = d.filter(x => x > 0).length;
+      const top = bestOf(full, r => (k === 1 ? r.d1 : r.d2), true);
+      return tile(`Metodo ${k} rispetto alla rete originale`, k === 1 ? 'finestre sovrapposte, stato che prosegue nel test' : 'finestre consecutive, stato che passa avanti anche nel training',
+        full.length ? `${better} su ${full.length}` : '—', 'reti con errore più basso',
+        full.length ? [h('span', null, 'riduzione media dell\'errore ', signed(mean(d))),
+          top ? h('span', null, `caso migliore ${top.id} `, signed(k === 1 ? top.d1 : top.d2)) : null] : [], better > 0);
+    };
+    const cands = rows.flatMap(r => [['o', r.o], [1, r.m1], [2, r.m2]].filter(x => x[1] != null).map(([w, v]) => ({ r, w, v })));
+    const top = bestOf(cands, x => x.v);
+    view.append(h('div', { class: 'grid three' }, tileFor(1), tileFor(2),
+      tile('Errore più basso', top ? `${top.r.id} · ${ST_WHO[top.w]}` : '', top ? fmt(top.v, met.d) : '—', met.unit,
+        top ? [fact('persistenza', fmt(top.r.p, met.d) + ' ' + met.unit), fact('metrica', met.label)] : [])));
+
+    // --- networks compared
+    const nK = 'stNet_' + fk, sK = 'stSeason_' + fk;
+    view.append(card(`Confronto per rete · ${met.label}`, 'Media delle stagioni pesata con i giorni; tutte le reti hanno TL = 1. "vs originale" = riduzione dell\'errore rispetto alla rete originale (positivo = la nuova versione sbaglia meno). Clicca su una rete per vederne il dettaglio qui sotto.',
+      table([
+        { key: 'id', label: 'Rete', render: r => linkBtn(r.id + (r.n.preferred ? ' ★' : ''), () => { S[nK] = r.id; save(); render(true); scrollToId('st-dettaglio'); }, 'Mostra il dettaglio') },
+        { key: 'th', label: 'TH', num: true }, { key: 'cells', label: 'Celle', num: true },
+        { key: 'o', label: 'Rete originale', num: true, fmt: v => fmt(v, met.d) },
+        { key: 'm1', label: 'Metodo 1', num: true, fmt: v => fmt(v, met.d) },
+        { key: 'm2', label: 'Metodo 2', num: true, fmt: v => fmt(v, met.d) },
+        { key: 'p', label: 'Persistenza', num: true, fmt: v => fmt(v, met.d) },
+        { key: 'd1', label: 'M1 vs originale', num: true, render: r => signed(r.d1), title: 'Riduzione dell\'errore rispetto alla rete originale' },
+        { key: 'd2', label: 'M2 vs originale', num: true, render: r => signed(r.d2), title: 'Riduzione dell\'errore rispetto alla rete originale' },
+      ], rows, { sortKey: 'th' })));
+
+    // --- one network
+    const n = nets.find(x => x.id === S[nK]) || ready.find(x => x.preferred) || ready[0] || nets[0];
+    const has = (k, key) => !!(n.methods[k] && n.methods[k].seasons[key]);
+    const avail = seasons.filter(s => has('1', s.key) || has('2', s.key));
+    if (!avail.length) return;
+    const sk = avail.some(s => s.key === S[sK]) ? S[sK] : (avail.find(s => s.key === (isAbr ? 'Estate2021' : 'Estate_3')) || avail[0]).key;
+    view.append(sectionTitle('Dettaglio di una rete', 'st-dettaglio', 'Errore stagione per stagione, andamento dell\'errore durante l\'addestramento e previsioni nel test.'));
+    view.append(filters(
+      selectCtl('Rete', nets.map(x => ({ value: x.id, label: x.id + (x.preferred ? ' · preferita' : '') + (stComplete(x, keys) ? '' : ' · incompleta') })), n.id, v => set(nK, v)),
+      selectCtl('Stagione', avail.map(s => ({ value: s.key, label: s.label })), sk, v => set(sK, v)),
+      checkCtl('Mostra l\'errore medio dei mini-batch', S.stMb, v => set('stMb', v))));
+    const bars = chartDiv('short');
+    view.append(card(`${met.label} stagione per stagione · ${n.id}`, `Script ${n.script || '—'} (rete di partenza ${n.original || '—'}). Clicca su una stagione per vederne il dettaglio qui sotto.`, bars));
+    const xs = avail.map(s => s.label);
+    const bt = ['o', 1, 2, 'p'].map(w => {
+      const name = w === 'p' ? `Persistenza (TL ${n.tl})` : ST_WHO[w];
+      return { type: 'bar', name, x: xs, y: avail.map(s => stSeasonVal(isAbr, n, w, met.value, s.key, samples)),
+        marker: { color: stCol(c, w), opacity: avail.map(s => (s.key === sk ? 1 : 0.5)) },
+        hovertemplate: `${name}<br>%{x}: <b>%{y:.${met.d}f} ${met.unit}</b><extra></extra>` };
+    });
+    plot(bars, bt, { barmode: 'group', showlegend: true, yaxis: { title: { text: met.label } } }, `stato_${fk}_${n.id}_stagioni`);
+    bars.on('plotly_click', ev => { const p = ev.points && ev.points[0]; const s = p && avail.find(x => x.label === p.x); if (s) set(sK, s.key); });
+
+    const e1 = has('1', sk) ? n.methods['1'].seasons[sk] : null, e2 = has('2', sk) ? n.methods['2'].seasons[sk] : null;
+    const any = e1 || e2;
+    const v = w => stSeasonVal(isAbr, n, w, 'mae', sk, samples);
+    const vO = v('o'), vP = v('p');
+    const mTile = (k, e) => {
+      const vk = v(k);
+      return tile(`Metodo ${k}`, e ? `epoca usata ${e.best} di ${e.ep ? e.ep.tr.length : '—'}` : 'non ancora disponibile', fmt(vk, 2), U + ' MAE',
+        e ? [h('span', null, 'vs originale ', signed(improve(vk, vO))), h('span', null, 'vs persistenza ', signed(improve(vk, vP)))] : [], vk != null && vO != null && vk < vO);
+    };
+    const nUsed = joined && samples === 'last20' && any.n20 != null ? any.n20 : any.n;
+    view.append(h('div', { class: 'grid four' },
+      tile('Rete originale', `${n.id} · ${seasonLabel(sk)}`, fmt(vO, 2), U + ' MAE', [h('span', null, 'vs persistenza ', signed(improve(vO, vP)))]),
+      mTile(1, e1), mTile(2, e2),
+      tile('Campioni confrontati', joined && samples === 'last20' ? 'ultimo 20 % dell\'anno 3' : (isAbr ? 'ore di test' : 'righe di test con previsione'), fmt(nUsed, 0), '',
+        [fact('righe del test', fmt(any.n_tot, 0)), fact('persistenza', fmt(vP, 2) + ' ' + U)])));
+
+    // error per epoch
+    const ec = chartDiv();
+    view.append(card(`Errore durante l'addestramento · ${seasonLabel(sk)}`,
+      `MAE in ${U} alla fine di ogni epoca, calcolato con lo stato che prosegue come nel test. Linea continua = training, tratteggiata = validazione; la stella segna l'epoca usata. Se la validazione risale mentre il training continua a scendere, la rete sta andando in overfitting; se restano alte entrambe, in underfitting.`, ec));
+    const et = [];
+    let nEp = 0;
+    for (const [k, e] of [[1, e1], [2, e2]]) {
+      if (!e || !e.ep) continue;
+      const x = e.ep.tr.map((_, i) => i + 1), col = stCol(c, k);
+      nEp = Math.max(nEp, x.length);
+      et.push(lineT(x, e.ep.tr, `Metodo ${k} · training`, col, { hovertemplate: `Metodo ${k} · training · epoca %{x}: <b>%{y:.2f} ${U}</b><extra></extra>` }));
+      et.push(lineT(x, e.ep.va, `Metodo ${k} · validazione`, col, { line: { color: col, width: 2, dash: 'dash' }, hovertemplate: `Metodo ${k} · validazione · epoca %{x}: <b>%{y:.2f} ${U}</b><extra></extra>` }));
+      if (S.stMb) et.push(lineT(x, e.ep.mb, `Metodo ${k} · media dei mini-batch`, col, { line: { color: col, width: 1, dash: 'dot' }, hovertemplate: `Metodo ${k} · mini-batch · epoca %{x}: <b>%{y:.2f} ${U}</b><extra></extra>` }));
+      if (e.best) et.push({ type: 'scatter', mode: 'markers', x: [e.best], y: [e.ep.va[e.best - 1]], showlegend: false,
+        marker: { symbol: 'star', size: 14, color: col, line: { color: c.surface, width: 1 } }, hovertemplate: `Metodo ${k}: epoca usata %{x}<br>validazione <b>%{y:.2f} ${U}</b><extra></extra>` });
+    }
+    if (!et.length) ec.replaceWith(emptyBox('Errore per epoca non disponibile per questa stagione.'));
+    else {
+      const lay = { hovermode: 'closest', xaxis: { title: { text: 'Epoca' }, dtick: 5 }, yaxis: { title: { text: `MAE [${U}]` } } };
+      if (nEp > 20) { const vl = vline(20.5, c.muted, 'learning rate × 0,2', 'right'); lay.shapes = [vl.shape]; lay.annotations = [vl.ann]; }
+      plot(ec, et, lay, `stato_${fk}_${n.id}_${sk}_epoche`);
+    }
+
+    // forecasts in the test
+    let xT = null, real = null, orig = null;
+    const preds = {};
+    if (isAbr) {
+      const oc = ABR.configs.find(x => x.id === n.id), os = oc && oc.seasons[sk] && oc.seasons[sk].series;
+      if (os) { xT = os.t; real = os.real; orig = os.pred; }
+      for (const k of ['1', '2']) { const cf = ST_ABR.find(x => x.id === `${n.id} · M${k}`); const s = cf && cf.seasons[sk] && cf.seasons[sk].series; if (s) preds[k] = s.pred; }
+    } else {
+      for (const k of ['1', '2']) {
+        const cf = ST_GD[fk + 'S'].configs.find(x => x.id === `${n.id} · M${k}`), s = cf && cf.seasons[sk] && cf.seasons[sk].series;
+        if (s) { preds[k] = s.pred; if (!xT) { xT = s.idx; real = s.real; } }
+      }
+      const oc = GD[fk].configs.find(x => x.id === n.id), os = oc && oc.seasons[sk] && oc.seasons[sk].series;
+      if (os && xT) { const at = new Map(os.idx.map((i, j) => [i, os.pred[j]])); orig = xT.map(i => (at.has(i) ? at.get(i) : null)); }
+    }
+    if (xT) {
+      const tsd = chartDiv('tall');
+      view.append(card(`${isAbr ? 'Energia' : 'Potenza'} misurata e prevista nel test · ${seasonLabel(sk)}`,
+        (isAbr ? 'Ore reali dal file Excel.' : 'Le notti non sono nei dati: un giorno segue subito il precedente; la prima riga di ogni giorno non ha previsione nelle nuove reti.') + ' Usa la barra in basso per spostarti; nell\'esploratore puoi scegliere la finestra e leggere gli errori sui soli campioni visibili.',
+        tsd, h('button', { type: 'button', class: 'ghost-btn', onclick: () => openStatoInExplorer(isAbr, fk, n, sk) }, 'Apri nell\'esploratore')));
+      const tr = [lineT(xT, real, 'Misurata', c.text1, { hovertemplate: `<b>%{y:.1f} ${U}</b> misurata<extra></extra>` })];
+      if (orig) tr.push(lineT(xT, orig, 'Rete originale', stCol(c, 'o'), { line: { color: stCol(c, 'o'), width: 1.5 }, hovertemplate: `<b>%{y:.1f} ${U}</b> rete originale<extra></extra>` }));
+      for (const k of ['1', '2']) if (preds[k]) tr.push(lineT(xT, preds[k], `Metodo ${k}`, stCol(c, Number(k)), { line: { color: stCol(c, Number(k)), width: 1.5 }, hovertemplate: `<b>%{y:.1f} ${U}</b> metodo ${k}<extra></extra>` }));
+      const win = Math.min(xT.length - 1, isAbr ? 72 : 288);
+      const lay = { hovermode: 'x unified', xaxis: { range: [xT[0], xT[win]], rangeslider: { visible: true, thickness: 0.08, bgcolor: c.surface2, bordercolor: c.axis },
+        title: { text: isAbr ? '' : 'Riga del foglio della stagione' } }, yaxis: { title: { text: isAbr ? 'Energia [kWh]' : 'Potenza AC [kW]' }, rangemode: 'tozero' } };
+      if (isAbr) { lay.xaxis.type = 'date'; lay.xaxis.tickformat = '%d/%m %H:%M'; }
+      plot(tsd, tr, lay, `stato_${fk}_${n.id}_${sk}_test`);
+    }
+
+    // --- complete table
+    view.append(sectionTitle('Tabella completa', null, 'Tutte le reti in tutte le stagioni, con l\'epoca usata da ogni metodo.'));
+    view.append(foldCard('Errori per rete e stagione', `MAE in ${U}, per ogni riga sulle stesse ore o righe del test. Fonti: Risultati_<stagione>.csv ed Errore_per_epoca_<stagione>.csv nelle cartelle …_stato_aggiornato_metodo1 e …_metodo2.`, () => {
+      const rs = [];
+      for (const x of nets) for (const s of seasons) {
+        const a = x.methods['1'] && x.methods['1'].seasons[s.key], b = x.methods['2'] && x.methods['2'].seasons[s.key];
+        if (!a && !b) continue;
+        const g = w => stSeasonVal(isAbr, x, w, 'mae', s.key, samples), e = a || b;
+        rs.push({ net: x.id, season: s.label, o: g('o'), m1: g(1), m2: g(2), p: g('p'), b1: a ? a.best : null, b2: b ? b.best : null,
+          n: joined && samples === 'last20' && e.n20 != null ? e.n20 : e.n, nt: e.n_tot, _hl: x === n });
+      }
+      return table([{ key: 'net', label: 'Rete' }, { key: 'season', label: 'Stagione' },
+        { key: 'o', label: 'Rete originale', num: true, fmt: v2 => fmt(v2, 2) }, { key: 'm1', label: 'Metodo 1', num: true, fmt: v2 => fmt(v2, 2) },
+        { key: 'm2', label: 'Metodo 2', num: true, fmt: v2 => fmt(v2, 2) }, { key: 'p', label: 'Persistenza', num: true, fmt: v2 => fmt(v2, 2) },
+        { key: 'b1', label: 'Epoca M1', num: true }, { key: 'b2', label: 'Epoca M2', num: true },
+        { key: 'n', label: 'Campioni confrontati', num: true }, { key: 'nt', label: 'Righe del test', num: true }], rs, { scroll: true });
+    }));
+  }
+
   // ================================================================== VIEW: explorer (whole test sets)
   let expRange = null;            // current x window [a, b] (not saved between sessions)
   let expKey = null;              // model|season|unit the window belongs to
@@ -1849,12 +2104,26 @@
     return h('button', { type: 'button', class: 'ghost-btn', onclick: () => openInExplorer(model, cfgId, season) }, 'Apri nell\'esploratore');
   }
 
-  const GD_GROUP = { exo: 'Esogena · stagioni separate', endo: 'Endogena · stagioni separate', exoJ: 'Esogena · anni uniti (solo fogli dell\'anno 3)', endoJ: 'Endogena · anni uniti (solo fogli dell\'anno 3)' };
+  const GD_GROUP = { exo: 'Esogena · stagioni separate', endo: 'Endogena · stagioni separate', exoJ: 'Esogena · anni uniti (solo fogli dell\'anno 3)', endoJ: 'Endogena · anni uniti (solo fogli dell\'anno 3)',
+    exoS: 'Esogena · stagioni separate · stato aggiornato (M1, M2)', endoS: 'Endogena · stagioni separate · stato aggiornato (M1, M2)',
+    exoJS: 'Esogena · anni uniti · stato aggiornato (M1, M2)', endoJS: 'Endogena · anni uniti · stato aggiornato (M1, M2)' };
+  const EXP_GD_FAMS = ['exo', 'endo', 'exoJ', 'endoJ', 'exoS', 'endoS', 'exoJS', 'endoJS'];
+  function stGdAll() {
+    return ['exoS', 'endoS', 'exoJS', 'endoJS'].flatMap(fk => ST_GD[fk].configs.map(cf => Object.assign({}, cf, { id: fk + ':' + cf.id, label: GD_TAG[fk] + ' ' + cf.id })));
+  }
+  // explorer with the original network and its two "stato aggiornato" versions of one season
+  function openStatoInExplorer(isAbr, fk, n, season) {
+    const ids = isAbr ? [n.id, `${n.id} · M1`, `${n.id} · M2`] : [`${fk}:${n.id}`, `${fk}S:${n.id} · M1`, `${fk}S:${n.id} · M2`];
+    S.expModel = isAbr ? 'abr' : 'exo';
+    if (isAbr) { S.expSeasonAbr = season; S.expCfgsAbr = ids; S.expSlotsAbr = {}; } else { S.expSeasonExo = season; S.expCfgsExo = ids; S.expSlotsExo = {}; }
+    expRange = null; expKey = null; save();
+    go(isAbr ? 'abruzzo/esplora' : 'gd/esplora');
+  }
   function viewExplorer(model) {
     const c = C();
     S.expModel = model;
     const isAbr = model === 'abr';
-    const cfgList = isAbr ? ABR.configs : gdAll();
+    const cfgList = isAbr ? ABR.configs.concat(ST_ABR) : gdAll().concat(stGdAll());
     const seasons = isAbr ? ABR_SEASONS : EXO_SEASONS;
     const seasonKey = isAbr ? S.expSeasonAbr : S.expSeasonExo;
     const selKey = isAbr ? 'expCfgsAbr' : 'expCfgsExo', slotKey = isAbr ? 'expSlotsAbr' : 'expSlotsExo';
@@ -1872,8 +2141,10 @@
     // --- selection row
     const alertBox = h('span', { class: 'note', hidden: true }, 'Al massimo quattro configurazioni insieme: togline una prima di aggiungerne un\'altra.');
     const chipBox = h('div', { class: 'chip-groups' });
-    const groupsOf = isAbr ? [{ key: 'abr', label: null, list: cfgList }]
-      : ['exo', 'endo', 'exoJ', 'endoJ'].map(fk => ({ key: fk, label: GD_GROUP[fk], list: cfgList.filter(cf => cf.id.startsWith(fk + ':')) })).filter(gp => gp.list.length);
+    const groupsOf = isAbr
+      ? [{ key: 'abr', label: ST_ABR.length ? 'Reti originali' : null, list: ABR.configs },
+        { key: 'abrS', label: 'Stato aggiornato nel test (M1 = metodo 1, M2 = metodo 2)', list: ST_ABR }].filter(gp => gp.list.length)
+      : EXP_GD_FAMS.map(fk => ({ key: fk, label: GD_GROUP[fk], list: cfgList.filter(cf => cf.id.startsWith(fk + ':')) })).filter(gp => gp.list.length);
     for (const gp of groupsOf) {
     const chips = h('div', { class: 'cfg-chips', role: 'group', 'aria-label': gp.label || 'Configurazioni' });
     chipBox.append(h('div', { class: 'chip-group' }, gp.label ? h('span', { class: 'chip-group-label' }, gp.label) : null, chips));
