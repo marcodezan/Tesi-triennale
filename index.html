@@ -1,23 +1,25 @@
 <!doctype html>
-<html lang="it">
+<html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Risultati modelli FV</title>
-  <link rel="stylesheet" href="style.css">
+  <title>Forecasting photovoltaic power with LSTM networks</title>
+  <link rel="stylesheet" href="style.css?v=20261116d">
   <script src="vendor/plotly.min.js"></script>
-  <script src="data.js"></script>
+  <script src="data.js?v=20261116d"></script>
 </head>
 <body>
   <header class="topbar">
     <div class="topbar-inner">
       <div class="brand">
-        <h1>Previsione della potenza FV</h1>
-        <p class="sub" id="build-info">Risultati dei modelli</p>
+        <h1 id="site-title">Forecasting photovoltaic power with LSTM networks</h1>
+        <p class="sub" id="build-info"></p>
       </div>
       <div class="topbar-actions">
         <span class="chip warn" id="material-chip" hidden></span>
-        <button type="button" class="ghost-btn" id="theme-btn" aria-label="Cambia tema">Tema: auto</button>
+        <a class="ghost-btn" id="li-link" target="_blank" rel="noopener" hidden>LinkedIn</a>
+        <button type="button" class="ghost-btn" id="lang-btn">Italiano</button>
+        <button type="button" class="ghost-btn" id="theme-btn" aria-label="Theme">Theme: auto</button>
       </div>
     </div>
     <nav class="tabs" id="tabs" aria-label="Dataset e sezioni"></nav>
@@ -45,7 +47,9 @@
   </div>
 
   <noscript><p class="empty">Questa pagina richiede JavaScript.</p></noscript>
-  <script src="testi.js"></script>
-  <script src="app.js"></script>
+  <script src="testi.js?v=20261116d"></script>
+  <script src="overview_texts.js?v=20261116d"></script>
+  <script src="i18n_en.js?v=20261116d"></script>
+  <script src="app.js?v=20261116d"></script>
 </body>
 </html>
