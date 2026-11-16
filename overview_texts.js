@@ -10,6 +10,7 @@ window.OV_TEXTS = {
   en: {
     site_title: "Forecasting photovoltaic power with LSTM networks",
     site_sub: "Marco De Zan · BSc thesis project · Sapienza University of Rome",
+    brand_name: "Marco De Zan", brand_sub: "Sapienza University of Rome",
     nav_overview: "Overview", nav_gd: "Generation data", nav_abr: "Abruzzo plant", nav_all: "All results",
     nav_notes: "Methods and glossary", nav_thesis: "Thesis",
     detail_note: "",
@@ -120,6 +121,7 @@ window.OV_TEXTS = {
   it: {
     site_title: "Previsione della potenza fotovoltaica con reti LSTM",
     site_sub: "Marco De Zan · progetto di tesi triennale · Sapienza Università di Roma",
+    brand_name: "Marco De Zan", brand_sub: "Sapienza Università di Roma",
     nav_overview: "Panoramica", nav_gd: "Generation data", nav_abr: "Impianto in Abruzzo", nav_all: "Tutti i risultati",
     nav_notes: "Metodi e glossario", nav_thesis: "Tesi",
     detail_note: "",

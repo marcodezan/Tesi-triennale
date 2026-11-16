@@ -830,8 +830,8 @@
   function applyLang() {
     document.documentElement.lang = S.lang;
     document.title = tx('site_title');
-    document.getElementById('site-title').textContent = tx('site_title');
-    document.getElementById('build-info').textContent = tx('site_sub');
+    document.getElementById('site-title').textContent = tx('brand_name');
+    document.getElementById('build-info').textContent = tx('brand_sub');
     for (const b of tabsEl.children) b.textContent = tabLabel(TABS.find(t => t.id === b.dataset.id));
     if (langBtn) { langBtn.textContent = S.lang === 'en' ? 'Italiano' : 'English'; langBtn.setAttribute('aria-label', S.lang === 'en' ? 'Passa all’italiano' : 'Switch to English'); }
     if (liLink) { liLink.hidden = !OVT.linkedin; if (OVT.linkedin) liLink.href = OVT.linkedin; }
@@ -982,7 +982,7 @@
   function updateEditBar() {
     const n = changedKeys().length;
     editBtn.hidden = !ghToken() && !editing;
-    editBtn.textContent = editing ? 'Fine modifica' : 'Modifica testi' + (n ? ' •' : '');
+    editBtn.textContent = LANG === 'en' ? (editing ? 'Stop editing' : 'Edit texts' + (n ? ' •' : '')) : (editing ? 'Fine modifica' : 'Modifica testi' + (n ? ' •' : ''));
     editBtn.setAttribute('aria-pressed', String(editing));
     editBar.hidden = !editing;
     if (!editing) return;
@@ -1269,7 +1269,12 @@
     return { hasState: gSt != null, hasNoNight: !!nn };
   }
   function storyHead(kKey, titleKey) { return h('div', { class: 'story-head' }, kKey ? h('p', { class: 'kicker' }, tx(kKey)) : null, h('h2', null, tx(titleKey))); }
-  function storySec(id, head, textKey, ...rest) { return h('section', { class: 'story-sec', id }, head, textKey ? h('div', { class: 'story-prose' }, prose(textKey)) : null, rest); }
+  // a section of the Overview: text (title, paragraphs, buttons) in the left column, charts and tables in the right one
+  function storySec(id, head, textKey, media, actions) {
+    const m = [].concat(media || []).filter(Boolean);
+    const text = h('div', { class: 'story-text' }, head, textKey ? h('div', { class: 'story-prose' }, prose(textKey)) : null, actions || null);
+    return h('section', { class: 'story-sec' + (m.length ? ' split' : ''), id }, text, m.length ? h('div', { class: 'story-media' }, m) : null);
+  }
   function barsH(div, labels, values, colors, unit, d, axisTitle, name) {
     const c = C();
     div.style.height = Math.max(190, labels.length * 46 + 80) + 'px';
@@ -1317,10 +1322,11 @@
 
     // ---- opening
     root.append(h('header', { class: 'hero' },
-      h('p', { class: 'kicker' }, tx('hero_kicker')),
-      h('h2', { class: 'hero-title' }, tx('hero_title')),
-      h('div', { class: 'hero-lead' }, prose('hero_lead')),
-      h('p', { class: 'hero-status' }, h('span', { class: 'chip accent' }, tx('hero_status'))),
+      h('div', { class: 'hero-main' },
+        h('p', { class: 'kicker' }, tx('hero_kicker')),
+        h('h2', { class: 'hero-title' }, tx('hero_title')),
+        h('div', { class: 'hero-lead' }, prose('hero_lead')),
+        h('p', { class: 'hero-status' }, h('span', { class: 'chip accent' }, tx('hero_status')))),
       h('div', { class: 'stat-row' }, [1, 2, 3, 4].map(i => h('div', { class: 'stat' },
         h('div', { class: 'stat-v' }, tx('stat' + i + '_v')), h('div', { class: 'stat-l' }, tx('stat' + i + '_l')))))));
 
@@ -1332,7 +1338,7 @@
     const dGd = chartDiv('small'), dAb0 = chartDiv('small');
     const dataCard = (k, div) => h('section', { class: 'card' }, h('div', { class: 'card-head' }, h('div', null, h('h3', null, tx('data_' + k + '_t')))),
       h('div', { class: 'story-prose in-card' }, prose('data_' + k + '_p')), div, h('p', { class: 'note' }, tx('data_' + k + '_c')));
-    root.append(storySec('data', storyHead(null, 'data_title'), null, h('div', { class: 'grid two' }, dataCard('gd', dGd), dataCard('abr', dAb0))));
+    root.append(h('section', { class: 'story-sec', id: 'data' }, storyHead(null, 'data_title'), h('div', { class: 'grid two' }, dataCard('gd', dGd), dataCard('abr', dAb0))));
     {
       const e = exoPref.seasons.Estate_3 || Object.values(exoPref.seasons)[0];
       const n = Math.min(560, e.series.real.length);
@@ -1365,9 +1371,9 @@
     const a = abrPref;
     const aKey = ABR_SEASONS.some(s => s.key === S.stAbrSeason && a.seasons[s.key].series) ? S.stAbrSeason : (ABR_SEASONS.find(s => a.seasons[s.key].series) || ABR_SEASONS[0]).key;
     const dA = chartDiv('tall'), dAb = chartDiv();
-    root.append(storySec('step2', storyHead('s2_k', 's2_title'), 's2_p',
+    root.append(storySec('step2', storyHead('s2_k', 's2_title'), 's2_p', [
       card(tx('s2_chart_t'), tx('s2_chart_d'), dA, selectCtl(tx('season'), ABR_SEASONS.map(s => ({ value: s.key, label: seasonL(s.key) })), aKey, v => set('stAbrSeason', v))),
-      card(tx('s2_bar_t'), tx('s2_bar_d'), dAb),
+      card(tx('s2_bar_t'), tx('s2_bar_d'), dAb)],
       h('div', { class: 'story-actions' },
         h('button', { type: 'button', class: 'primary-btn', onclick: () => go('abruzzo/confronto') }, tx('btn_abr')),
         h('button', { type: 'button', class: 'ghost-btn', onclick: () => go('abruzzo/esplora') }, tx('btn_explorer')))));
@@ -1392,12 +1398,12 @@
     const cf = gdCfg(F, 12, tl, 64);
     const gKey = cf && cf.seasons[S.stGdSeason] ? S.stGdSeason : Object.keys(cf.seasons)[0];
     const dG = chartDiv('tall'), dGb = chartDiv();
-    root.append(storySec('step3', storyHead('s3_k', 's3_title'), 's3_p',
+    root.append(storySec('step3', storyHead('s3_k', 's3_title'), 's3_p', [
       card(tx('s3_chart_t'), tx('s3_chart_d'), dG, [
         segCtl(tx('net_type'), [{ value: 'exo', label: tx('exo') }, { value: 'endo', label: tx('endo') }], fk, v => set('stGdType', v)),
         segCtl(tx('horizon'), tls.map(t => ({ value: t, label: t * 5 + ' ' + tx('minutes') })), tl, v => set('stGdTl', v)),
         selectCtl(tx('block'), Object.keys(cf.seasons).map(k => ({ value: k, label: seasonL(k) })), gKey, v => set('stGdSeason', v))]),
-      card(tx('s3_bar_t'), tx('s3_bar_d'), dGb),
+      card(tx('s3_bar_t'), tx('s3_bar_d'), dGb)],
       h('div', { class: 'story-actions' },
         h('button', { type: 'button', class: 'primary-btn', onclick: () => go('gd/confronto') }, tx('btn_gd')),
         h('button', { type: 'button', class: 'ghost-btn', onclick: () => go('gd/esplora') }, tx('btn_explorer')))));
@@ -1421,7 +1427,7 @@
     // ---- the link with persistence
     const dL1 = chartDiv(), dL2 = chartDiv();
     root.append(storySec('persistence', storyHead(null, 'p_title'), 'p_p',
-      h('div', { class: 'grid two' }, card(tx('p_gd_t'), tx('p_chart_d'), dL1), card(tx('p_abr_t'), tx('p_chart_d'), dL2))));
+      [card(tx('p_gd_t'), tx('p_chart_d'), dL1), card(tx('p_abr_t'), tx('p_chart_d'), dL2)]));
     {
       const e = exoPref.seasons[gKey] || Object.values(exoPref.seasons)[0];
       storyLag(dL1, e.series.real, e.series.pred, exoPref.tl, 'kW', tx('axis_delay_gd'), 'delay_generation_data');
@@ -1466,7 +1472,7 @@
     barsH(dLim, [tx('l_b1'), tx('l_b2'), tx('l_b3')], [RAW.regMae, RAW.gMae, RAW.gPers], [c.s1, c[ROLE.model], c[ROLE.pers]], 'kW', 1, tx('axis_mae_kw'), 'limit');
 
     // ---- inside the network, status
-    root.append(storySec('inside', storyHead(null, 'i_title'), 'i_p', h('div', { class: 'story-actions' },
+    root.append(storySec('inside', storyHead(null, 'i_title'), 'i_p', null, h('div', { class: 'story-actions' },
       h('button', { type: 'button', class: 'primary-btn', onclick: () => go('abruzzo/architetture') }, tx('btn_arch')),
       h('button', { type: 'button', class: 'ghost-btn', onclick: () => go('abruzzo/lstmvis') }, tx('btn_states')))));
     root.append(storySec('status', storyHead(null, 'st_title'), 'st_p'));
