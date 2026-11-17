@@ -965,6 +965,9 @@
   view.addEventListener('click', e => { if (editing && e.target.closest && e.target.closest('summary .edt')) e.preventDefault(); });
 
   // --- controls: topbar button (devices with a token), footer link, edit bar, token dialog
+  // On the public site visitors see no way in: the footer link appears only on a device that already has the token,
+  // or when the address contains ?modifica (the owner opens .../Tesi-triennale/?modifica to log in on a new device).
+  const EDIT_URL = new URLSearchParams(location.search).has('modifica');
   const editBar = h('div', { class: 'editbar', hidden: true, role: 'region', 'aria-label': 'Modifica dei testi' });
   const editBtn = h('button', { type: 'button', class: 'ghost-btn', onclick: () => toggleEditing() }, 'Modifica testi');
   const footLink = h('button', { type: 'button', class: 'link-btn foot-link', onclick: () => toggleEditing() }, LANG === 'en' ? 'Edit texts' : 'Modifica i testi');
@@ -974,6 +977,7 @@
   function updateEditBar() {
     const n = changedKeys().length;
     editBtn.hidden = !ghToken() && !editing;
+    footLink.hidden = D.public && !ghToken() && !editing && !EDIT_URL;
     editBtn.textContent = LANG === 'en' ? (editing ? 'Stop editing' : 'Edit texts' + (n ? ' •' : '')) : (editing ? 'Fine modifica' : 'Modifica testi' + (n ? ' •' : ''));
     editBtn.setAttribute('aria-pressed', String(editing));
     editBar.hidden = !editing;
@@ -1003,6 +1007,13 @@
   }
   function ghHeaders(token) { return { Authorization: 'Bearer ' + token, Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28' }; }
   const fileUrl = () => `https://api.github.com/repos/${GH.owner}/${GH.repo}/contents/${GH.path}`;
+  // the repository is public, so any valid GitHub token can read it: editing needs a token whose user can write to it
+  async function checkWrite(token) {
+    const r = await fetch(`https://api.github.com/repos/${GH.owner}/${GH.repo}?t=${Date.now()}`, { headers: ghHeaders(token), cache: 'no-store' });
+    if (!r.ok) throw new Error(r.status === 401 ? 'token non valido o scaduto' : 'GitHub ha risposto ' + r.status);
+    const j = await r.json();
+    if (!(j.permissions && j.permissions.push === true)) throw new Error('questo token non ha il permesso di modificare il sito');
+  }
   async function readRemote(token) {
     const r = await fetch(fileUrl() + '?ref=' + GH.branch + '&t=' + Date.now(), { headers: ghHeaders(token), cache: 'no-store' });
     if (r.status === 404) return { sha: null, tx: {} };
@@ -1023,6 +1034,7 @@
       if (!t) { msg.textContent = 'Incolla il token.'; return; }
       msg.textContent = 'Controllo il token…';
       try {
+        await checkWrite(t);
         await readRemote(t);
         store.set('gh_token', t); close();
         toggleEditing();
@@ -2942,4 +2954,7 @@
   applyTheme();
   render(false);
   updateEditBar();
+  // a token saved on this device that is no longer valid, or cannot write to the site, is forgotten
+  if (ghToken()) checkWrite(ghToken()).catch(e => { if (/non valido|permesso/.test(e.message)) forgetToken(); });
+  if (EDIT_URL && !ghToken()) openTokenDialog();
 })();
