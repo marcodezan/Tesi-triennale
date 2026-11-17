@@ -191,7 +191,6 @@
   if (['auto', 'light', 'dark'].includes(urlTheme)) S.theme = urlTheme;
   S.lang = LANG;
   // drop saved values that no longer exist in the data
-  if (!REG.runs.some(r => r.name === S.regRun)) S.regRun = DEFAULTS.regRun;
   if (!ABR.configs.some(c => c.id === S.abrConfig)) S.abrConfig = DEFAULTS.abrConfig;
   if (!ABR_SEASONS.some(s => s.key === S.abrDetSeason)) S.abrDetSeason = ABR_SEASONS[0].key;
   if (!EXO.configs.some(c => c.id === S.exoConfig)) S.exoConfig = DEFAULTS.exoConfig;
@@ -439,12 +438,6 @@
   }
   function toScale(stops) { return stops.map((s, i) => [i / (stops.length - 1), s]); }
 
-  // ------------------------------------------------------------------ data access: regression
-  function regRun(name) { return REG.runs.find(r => r.name === name) || REG.runs[0]; }
-  function usedRun() { return regRun(REG.used_run); }
-  // regression: random test samples over the whole dataset -> MAE / mean power of the whole dataset (Dati_completi)
-  function regNmae(m) { return m && m.mae != null && REG.p_mean ? 100 * m.mae / REG.p_mean : null; }
-  function bestReg(run) { return run.metrics.filter(m => m.id !== 'baseline').reduce((a, b) => (a && a.mae <= b.mae ? a : b), null); }
 
   // skill score [%] = 1 - sum (y - yhat)^2 / sum (y - y_ref)^2. Model and reference are on the same test samples,
   // so the ratio of the sums equals (RMSE model / RMSE reference)^2.
@@ -777,7 +770,6 @@
     { id: 'panoramica', label: LX('Panoramica'), tk: 'nav_overview', render: viewStory },
     { id: 'gd', label: 'Generation data', tk: 'nav_gd', subs: [
       { id: 'confronto', label: LX('Confronto tra i modelli'), render: viewGDCompare },
-      { id: 'regressione', label: LX('Regressione'), render: viewRegression },
       { id: 'esogena', label: LX('LSTM esogena'), render: () => viewGD('exo') },
       { id: 'endogena', label: LX('LSTM endogena'), render: () => viewGD('endo') },
       { id: 'stato', label: LX('Stato aggiornato'), render: () => viewStato('gd') },
@@ -807,7 +799,7 @@
   function subLabel(t, s) { return LANG === 'en' ? (SUB_EN[t.id + '/' + s.id] || SUB_EN[s.id] || s.label) : s.label; }
   if (!SHOW_STATO) for (const t of TABS) if (t.subs) t.subs = t.subs.filter(s => s.id !== 'stato');
   // addresses used before the dashboard was organised by dataset
-  const OLD_HASH = { regressione: 'gd/regressione', esogena: 'gd/esogena', 'endogena-gd': 'gd/endogena', confronto: 'gd/confronto',
+  const OLD_HASH = { regressione: 'gd/confronto', esogena: 'gd/esogena', 'endogena-gd': 'gd/endogena', confronto: 'gd/confronto',
     endogena: 'abruzzo/confronto', grafici: 'gd/grafici' };
   function route() {
     const parts = location.hash.slice(1).split('?');
@@ -1090,16 +1082,9 @@
 
   // ================================================================== VIEW: overview
   const DS_GD = 'Generation data', DS_ABR = LX('Monomega Abruzzo');
-  const FAM_NAME = { reg: LX('Regressione'), exo: LX('LSTM esogena'), endo: LX('LSTM endogena'), exoJ: LX('LSTM esogena · anni uniti'), endoJ: LX('LSTM endogena · anni uniti'), abr: LX('LSTM endogena') };
+  const FAM_NAME = { exo: LX('LSTM esogena'), endo: LX('LSTM endogena'), exoJ: LX('LSTM esogena · anni uniti'), endoJ: LX('LSTM endogena · anni uniti'), abr: LX('LSTM endogena') };
   function overviewRows() {
     const rows = [];
-    const run = usedRun(), best = bestReg(run);
-    for (const m of run.metrics) {
-      rows.push({ ds: DS_GD, fam: 'reg', part: FAM_NAME.reg, key: 'reg-' + m.id, name: m.label, step: '—',
-        th: '—', tl: '—', cells: m.id === 'mlp' ? '64-32-16' : m.id === 'single_neuron' ? LX('1 neurone') : '—',
-        mae: m.mae, unit: 'kW', nmae: regNmae(m), nmae_prod: regNmae(m), skill: null, r2: m.r2,
-        src: run.source, baseline: m.id === 'baseline', _hl: best && m.id === best.id });
-    }
     for (const fk of ['exo', 'endo', 'exoJ', 'endoJ']) for (const c of GD[fk].configs) {
       const F = GD[fk];
       rows.push({ ds: DS_GD, fam: fk, part: FAM_NAME[fk], key: fk + '-' + c.id, name: c.id, step: LX('5 min (stima)'),
@@ -1129,14 +1114,12 @@
 
   function viewOverview() {
     const c = C();
-    const run = usedRun(), best = bestReg(run);
     view.append(viewHead(null, LX('Panoramica'),
-      LX('Modelli per stimare e prevedere la potenza di impianti fotovoltaici, provati su due dataset. Ogni dataset ha la sua scheda in alto: dentro trovi una pagina di confronto tra i modelli, una pagina per ogni modello, l\'esploratore del periodo di test, le architetture e i grafici originali.')));
+      LX('Reti LSTM per prevedere la potenza di impianti fotovoltaici, provate su due dataset. Ogni dataset ha la sua scheda in alto: dentro trovi una pagina di confronto tra i modelli, una pagina per ogni modello, l\'esploratore del periodo di test, le architetture e i grafici originali.')));
 
     // --- one card per dataset, with the headline results
     const bx = gdBest(EXO), bn = gdBest(ENDO);
     const gdRows = [
-      { m: LX('Regressione'), cfg: best.label, mae: best.mae, ref: h('span', null, 'R² ', h('b', null, fmt(best.r2, 3))) },
       bx ? { m: LX('LSTM esogena'), cfg: bx.id, mae: gdVal(EXO, bx, 'mae', 'mean'), ref: h('span', null, LX('vs persistenza '), signed(gdVal(EXO, bx, 'skill', 'mean'))) } : null,
       bn ? { m: LX('LSTM endogena'), cfg: bn.id, mae: gdVal(ENDO, bn, 'mae', 'mean'), ref: h('span', null, LX('vs persistenza '), signed(gdVal(ENDO, bn, 'skill', 'mean'))) } : null,
     ].filter(Boolean);
@@ -1148,10 +1131,10 @@
       return { m: LXt`Orizzonte ${tl} h`, cfg: b.id, mae: abrVal(b, 'mae', 'mean'), ref: h('span', null, LX('vs ieri '), signed(abrVal(b, 'skill_yest', 'mean'))) };
     });
     view.append(h('div', { class: 'grid two' },
-      datasetCard(DS_GD, LX('Un impianto, tre modelli sugli stessi dati.'), [
+      datasetCard(DS_GD, LX('Un impianto, reti LSTM esogene ed endogene sugli stessi dati.'), [
         LXt`Potenza AC con passo stimato di 5 minuti, solo ore di luce (${fmt(REG.n, 0)} campioni).`,
         LXt`${EXO_SEASONS.length} fogli stagionali su tre anni; impianto da ${fmt(P_NOM_GD, 0)} kWp, potenza massima misurata ${fmt(P_MAX, 1)} kW.`,
-        LX('Regressione: stima la potenza nello stesso istante dalle variabili meteo. LSTM: prevedono la potenza dei passi successivi, con la potenza passata e il meteo (esogena) o con la sola potenza passata (endogena).'),
+        LX('La LSTM esogena prevede la potenza dei passi successivi dalla potenza passata e dal meteo misurato, la LSTM endogena dalla sola potenza passata.'),
       ], [table(miniCols('kW'), gdRows), h('p', { class: 'note' }, LX('LSTM: reti addestrate stagione per stagione, media sulle stagioni pesata con i giorni di ciascuna. Persistenza = ultimo valore noto.'))],
       'gd/confronto', LX('Apri Generation data')),
       datasetCard(DS_ABR, LX('Un impianto, reti LSTM endogene con finestre e orizzonti diversi.'), [
@@ -1173,7 +1156,7 @@
     view.append(filters(selectCtl(LX('Metrica'), OV, met.value, v => set('ovMetric', v))));
     const all = overviewRows().filter(r => !r.baseline && r[met.value] != null);
     const groups = [
-      ...['reg', 'exo', 'endo', 'exoJ', 'endoJ'].map(f => ({ ds: DS_GD, name: FAM_NAME[f], rows: all.filter(r => r.fam === f) })),
+      ...['exo', 'endo', 'exoJ', 'endoJ'].map(f => ({ ds: DS_GD, name: FAM_NAME[f], rows: all.filter(r => r.fam === f) })),
       ...abrTls.map(tl => ({ ds: DS_ABR, name: LXt`LSTM endogena · orizzonte ${tl} h`, rows: all.filter(r => r.fam === 'abr' && r.tlh === tl) })),
     ].filter(g => g.rows.length).map(g => Object.assign(g, { best: bestOf(g.rows, r => r[met.value]) }));
     const labels = groups.map(g => `${g.name} · ${g.best.name}`);
@@ -1182,7 +1165,7 @@
     const refTxt = met.value === 'nmae_prod'
       ? LX('Riferimento: potenza media misurata del periodo di test (media pesata delle stagioni divisa per la potenza media di tutte le stagioni insieme). Per l\'Abruzzo la media è calcolata sulle sole ore con produzione: Generation data non ha le notti, quindi così i due dataset sono confrontati alla pari.')
       : LX('Riferimento: potenza media misurata del periodo di test. Per l\'Abruzzo la media comprende anche le ore notturne a produzione nulla, che Generation data non ha: l\'nMAE dell\'Abruzzo risulta più alto.');
-    view.append(card(met.label, refTxt + LX(' La regressione non prevede: stima la potenza nello stesso istante.'), div));
+    view.append(card(met.label, refTxt, div));
     const mk = ds => {
       const gs = groups.filter(g => g.ds === ds);
       return { type: 'bar', orientation: 'h', name: ds, y: gs.map(g => labels[groups.indexOf(g)]), x: gs.map(g => g.best[met.value]),
@@ -1217,7 +1200,6 @@
   const RAW = {};
   function storyFacts() {
     const gain = (m, p) => (m == null || !p ? null : 100 * (1 - m / p));
-    const run = usedRun(), lin = run.metrics.find(m => m.id === 'linear') || bestReg(run);
     const days = s => (ABR_SINFO[s.key] || {}).days;
     const a = abrPref;
     const abrBase = w => wmean(ABR_SEASONS.map(s => [(a.seasons[s.key].base[w] || {}).mae, days(s)]));
@@ -1250,12 +1232,11 @@
     }
     // no window across the night: new network and original one on the same samples
     const nn = (D.no_night || []).find(n => n.th === 6) || null;
-    Object.assign(RAW, { aMae, aPers: abrBase('pers'), aYest: abrBase('yest'), aStat: abrBase('stat'), gMae, gPers, regMae: lin.mae });
+    Object.assign(RAW, { aMae, aPers: abrBase('pers'), aYest: abrBase('yest'), aStat: abrBase('stat'), gMae, gPers });
     const p1 = v => fmt(v, 1), p0 = v => fmt(v, 0);
     FACTS = {
       n_networks: p0(Math.round(nNets / 10) * 10), gd_pnom: p0(P_NOM_GD), abr_pnom: fmt(P_NOM, 2), abr_pnom0: p0(P_NOM),
       gd_n: p0(REG.n), gd_blocks: String(EXO_SEASONS.length),
-      reg_r2: fmt(lin.r2, 2), reg_mae: p1(lin.mae), reg_pmean: p0(REG.p_mean),
       abr_mae: p1(aMae), abr_pers: p1(RAW.aPers), abr_yest: p1(RAW.aYest), abr_stat: p1(RAW.aStat),
       abr_skill_pers: p0(gain(aMae, RAW.aPers)), abr_skill_stat: p0(gain(aMae, RAW.aStat)),
       gd_mae: p1(gMae), gd_pers: p1(gPers), gd_skill: p0(gain(gMae, gPers)), gd_skill30: p0(gdGain(EXO, gdCfg(EXO, 12, 6, 64))),
@@ -1349,24 +1330,6 @@
         { showlegend: false, margin: { t: 10 }, xaxis: { title: { text: tx('axis_time') } }, yaxis: { title: { text: tx('axis_energy') }, rangemode: 'tozero' } }, 'abruzzo');
     }
 
-    // ---- step 1: from weather to power
-    const run = usedRun(), sc = run.scatter;
-    const regModels = ['linear', 'single_neuron', 'mlp'].filter(id => sc && sc.pred[id]);
-    const regId = regModels.includes(S.stReg) ? S.stReg : regModels[0];
-    const dReg = chartDiv('tall');
-    root.append(storySec('step1', storyHead('s1_k', 's1_title'), 's1_p',
-      card(tx('s1_chart_t'), tx('s1_chart_d'), sc ? dReg : emptyBox('—'),
-        sc ? segCtl(tx('s1_model'), regModels.map(id => ({ value: id, label: tx('m_' + id) })), regId, v => set('stReg', v)) : null)));
-    if (sc) {
-      const step = Math.max(1, Math.ceil(sc.measured.length / 6000));
-      const xs = sc.measured.filter((_, i) => i % step === 0), ys = sc.pred[regId].filter((_, i) => i % step === 0);
-      const mx = Math.max(...xs);
-      plot(dReg, [{ type: 'scattergl', mode: 'markers', x: xs, y: ys, name: tx('m_' + regId), marker: { size: 4, color: c[ROLE.model], opacity: 0.35 },
-        hovertemplate: tx('axis_meas') + ' %{x:.1f}<br>' + tx('axis_est') + ' <b>%{y:.1f}</b><extra></extra>' },
-      lineT([0, mx], [0, mx], tx('diag'), c.text2, { line: { color: c.text2, width: 1.5, dash: 'dash' }, hoverinfo: 'skip' })],
-      { xaxis: { title: { text: tx('axis_meas') }, rangemode: 'tozero' }, yaxis: { title: { text: tx('axis_est') }, rangemode: 'tozero' } }, 'regression');
-    }
-
     // ---- step 2: hourly forecasts (Abruzzo)
     const a = abrPref;
     const aKey = ABR_SEASONS.some(s => s.key === S.stAbrSeason && a.seasons[s.key].series) ? S.stAbrSeason : (ABR_SEASONS.find(s => a.seasons[s.key].series) || ABR_SEASONS[0]).key;
@@ -1450,31 +1413,37 @@
       const e = net.seasons[sKey];
       const dC = chartDiv('tall');
       root.append(storySec('learning', storyHead(null, 'c_title'), 'c_p',
-        card(tx('c_chart_t'), tx(net.state ? 'c_chart_d_state' : 'c_chart_d'), dC, [
+        card(tx('c_chart_t'), tx(net.state ? 'c_chart_d_state' : e.itc ? 'c_chart_d_it' : 'c_chart_d'), dC, [
           selectCtl(tx('c_net'), nets.map(n => ({ value: n.key, label: n.label })), net.key, v => set('stCurve', v)),
           selectCtl(tx('season'), sKeys.map(k => ({ value: k, label: seasonL(k) })), sKey, v => set('stCurveSeason', v))])));
       const hl = (y, name, col) => lineT([e.ep[0], e.ep[e.ep.length - 1]], [y, y], name, col, { line: { color: col, width: 1.6, dash: 'dash' }, hovertemplate: '<b>%{y:.2f} ' + net.unit + '</b><extra>' + name + '</extra>' });
       const ht = name => '%{x}<br><b>%{y:.2f} ' + net.unit + '</b><extra>' + name + '</extra>';
-      const tr = [lineT(e.ep, e.tr, tx('c_train'), c.s1, { hovertemplate: ht(tx('c_train')) })];
+      const tr = [];
+      // cost computed by Adam on every mini-batch (one point per weight update), or its mean per epoch when the
+      // per-iteration file is not there; below the other curves
+      if (e.itc && e.ipe) tr.push(lineT(e.itc.map((_, i) => (i + 1) / e.ipe), e.itc, tx('c_cost'), c.s3,
+        { line: { color: c.s3, width: 0.8 }, opacity: 0.35, customdata: e.itc.map((_, i) => i + 1),
+          hovertemplate: tx('c_iter') + ' %{customdata}<br><b>%{y:.2f} ' + net.unit + '</b><extra>' + tx('c_cost') + '</extra>' }));
+      else if (e.mb) tr.push(lineT(e.ep, e.mb, tx('c_cost_ep'), c.s3, { line: { color: c.s3, width: 1.6, dash: 'dashdot' }, hovertemplate: ht(tx('c_cost_ep')) }));
+      tr.push(lineT(e.ep, e.tr, tx('c_train'), c.s1, { hovertemplate: ht(tx('c_train')) }));
+      let lrPrev = e.lr0;
+      const lrMarks = (e.lr_steps || []).map(([x, v]) => { const m = vline(x, c.text2, tx('c_lr', { a: lrPrev, b: v }), 'right'); lrPrev = v; return m; });
       if (e.te) tr.push(lineT(e.ep, e.te, tx('c_test'), c.s2, { hovertemplate: ht(tx('c_test')) }));
       if (e.va) tr.push(lineT(e.ep, e.va, tx('c_val'), c.s2, { hovertemplate: ht(tx('c_val')) }));
       if (e.pers_tr != null) tr.push(hl(e.pers_tr, tx('c_ptrain'), c.s1));
       if (e.pers_te != null) tr.push(hl(e.pers_te, tx('c_ptest'), c.s2));
       if (e.dist) tr.push(lineT(e.ep, e.dist, tx('c_dist'), c.neutral, { line: { color: c.neutral, width: 1.8, dash: 'dot' }, hovertemplate: ht(tx('c_dist')) }));
       const top = 1.9 * Math.max(e.pers_tr || 0, e.pers_te || 0, Math.min(...e.tr.filter(v => v != null)));
-      plot(dC, tr, { hovermode: 'x unified', xaxis: { title: { text: tx('axis_epoch') }, dtick: 5 },
-        yaxis: { title: { text: tx(net.unit === 'kW' ? 'axis_mae_kw' : 'axis_mae_kwh') }, range: [0, top] } }, 'training_curves');
+      plot(dC, tr, { hovermode: 'x unified', xaxis: { title: { text: tx('axis_epoch') }, dtick: 5, hoverformat: '.2f' },
+        yaxis: { title: { text: tx(net.unit === 'kW' ? 'axis_mae_kw' : 'axis_mae_kwh') }, range: [0, top] },
+        shapes: lrMarks.map(m => Object.assign(m.shape, { line: Object.assign(m.shape.line, { dash: 'dot' }) })), annotations: lrMarks.map(m => Object.assign(m.ann, { y: 0.02, yanchor: 'bottom' })) }, 'training_curves');
     }
-
-    // ---- where the limit is
-    const dLim = chartDiv();
-    root.append(storySec('limit', storyHead(null, 'l_title'), 'l_p', card(tx('l_chart_t'), tx('l_chart_d'), dLim)));
-    barsH(dLim, [tx('l_b1'), tx('l_b2'), tx('l_b3')], [RAW.regMae, RAW.gMae, RAW.gPers], [c.s1, c[ROLE.model], c[ROLE.pers]], 'kW', 1, tx('axis_mae_kw'), 'limit');
 
     // ---- inside the network, status
     root.append(storySec('inside', storyHead(null, 'i_title'), 'i_p', null, h('div', { class: 'story-actions' },
       h('button', { type: 'button', class: 'primary-btn', onclick: () => go('abruzzo/architetture') }, tx('btn_arch')),
       h('button', { type: 'button', class: 'ghost-btn', onclick: () => go('abruzzo/lstmvis') }, tx('btn_states')))));
+    root.append(storySec('conclusions', storyHead(null, 'concl_title'), 'concl_p'));
     root.append(storySec('status', storyHead(null, 'st_title'), 'st_p'));
     root.append(h('p', { class: 'note story-foot' }, tx('foot')));
   }
@@ -1482,97 +1451,6 @@
   function viewThesis() {
     view.append(h('div', { class: 'story' }, h('header', { class: 'hero' }, h('h2', { class: 'hero-title' }, tx('thesis_title')),
       h('div', { class: 'hero-lead' }, prose('thesis_p')))));
-  }
-
-  // ================================================================== VIEW: regression
-  function viewRegression() {
-    const c = C();
-    const run = regRun(S.regRun);
-    view.append(viewHead(DS_GD, LX('Regressione'),
-      LXt`Stima della potenza AC nello stesso istante a partire da ${REG.inputs.join(', ')} (foglio Dati_completi, ${fmt(REG.n, 0)} campioni). Non è una previsione: usa le misure meteo dello stesso istante. Divisione casuale 70 / 15 / 15 %; le metriche sono sul test.`));
-    const models = run.metrics.map(m => ({ value: m.id, label: m.label }));
-    if (!run.metrics.some(m => m.id === S.regModel)) S.regModel = 'single_neuron';
-    view.append(filters(
-      selectCtl('Run', REG.runs.map(r => ({ value: r.name, label: r.name + (r.used ? LX(' (usato nella tesi)') : '') })), run.name, v => set('regRun', v)),
-      selectCtl(LX('Modello nel grafico di dispersione'), models, S.regModel, v => set('regModel', v)),
-      segCtl(LX('Errore per fascia di potenza'), [{ value: 'bias', label: LX('Errore medio') }, { value: 'mae', label: 'MAE' }], S.regBins, v => set('regBins', v)),
-    ));
-    if (!run.used) view.append(callout(LX('Stai guardando un run diverso da quello scelto per la tesi. I due run differiscono perché la divisione train/test è casuale e senza seed.')));
-    const bestM = bestReg(run);
-    view.append(sectionTitle(LX('In sintesi'), null, LXt`Errore sul test dei quattro modelli (${fmt(run.samples ? run.samples.test : 0, 0)} campioni). La baseline prevede sempre la potenza media: serve a capire quanto aggiungono gli altri modelli.`));
-    view.append(h('div', { class: 'grid four' }, run.metrics.map(m => tile(m.label, m === bestM ? LX('MAE più basso') : m.id === 'baseline' ? 'riferimento' : null, fmt(m.mae, 2), 'kW MAE',
-      [fact('RMSE', fmt(m.rmse, 2)), fact('R²', fmt(m.r2, 3)), fact('nMAE', fmt(regNmae(m), 1) + ' %')], m === bestM))));
-
-    // scatter + error by power band
-    const sc = run.scatter;
-    const g = h('div', { class: 'grid two' }); view.append(sectionTitle(LX('Stima contro misura'), null, LX('Dove sbagliano i modelli: per quali potenze sovrastimano o sottostimano.'))); view.append(g);
-    const d1 = chartDiv('square'), d2 = chartDiv('square');
-    const mSel = run.metrics.find(m => m.id === S.regModel);
-    g.append(card(LXt`Dispersione · ${mSel.label}`, LXt`Potenza prevista contro potenza misurata sui ${fmt(sc ? sc.measured.length : 0, 0)} campioni di test; la retta è la previsione perfetta.`, d1));
-    g.append(card(S.regBins === 'bias' ? LX('Errore medio per fascia di potenza misurata') : LX('MAE per fascia di potenza misurata'),
-      S.regBins === 'bias' ? LX('Valori positivi = sovrastima. Fasce di 25 kW; la baseline è esclusa.') : LX('Errore assoluto medio in ogni fascia di 25 kW; la baseline è esclusa.'), d2));
-    if (!sc) { d1.replaceWith(emptyBox(LX('Dati di dispersione non disponibili per questo run.'))); d2.replaceWith(emptyBox('—')); }
-    else {
-      const meas = sc.measured, pr = sc.pred[S.regModel];
-      const lo = Math.min(0, ...pr.filter(v => v != null)), hi = Math.max(...meas, ...pr.filter(v => v != null));
-      plot(d1, [
-        { type: 'scattergl', mode: 'markers', x: meas, y: pr, name: mSel.label,
-          marker: { size: 4, color: c[REG_COLOR[S.regModel]], opacity: 0.28 },
-          hovertemplate: LX('Misurata %{x:.1f} kW<br><b>Prevista %{y:.1f} kW</b><extra></extra>') },
-        lineT([lo, hi], [lo, hi], LX('Previsione perfetta'), c.muted, { line: { color: c.muted, width: 1 }, hoverinfo: 'skip' }),
-      ], { showlegend: false, margin: { t: 16 }, xaxis: { title: { text: LX('Potenza misurata [kW]') }, range: [lo, hi * 1.02] },
-        yaxis: { title: { text: LX('Potenza prevista [kW]') }, range: [lo, hi * 1.02] } }, 'regressione_dispersione');
-
-      const edges = []; for (let e = 0; e <= 350; e += 25) edges.push(e);
-      const centres = edges.slice(0, -1).map((e, i) => (e + edges[i + 1]) / 2);
-      const traces = ['linear', 'single_neuron', 'mlp'].filter(id => sc.pred[id]).map(id => {
-        const sums = centres.map(() => [0, 0]);
-        const p = sc.pred[id];
-        for (let i = 0; i < meas.length; i++) {
-          const b = Math.min(centres.length - 1, Math.floor(meas[i] / 25)); if (b < 0 || p[i] == null) continue;
-          const e = p[i] - meas[i]; sums[b][0] += S.regBins === 'bias' ? e : Math.abs(e); sums[b][1]++;
-        }
-        const label = run.metrics.find(m => m.id === id).label;
-        return lineT(centres, sums.map(s => s[1] ? s[0] / s[1] : null), label, c[REG_COLOR[id]],
-          { mode: 'lines+markers', marker: { size: 8, color: c[REG_COLOR[id]], line: { color: c.surface, width: 2 } },
-            customdata: sums.map(s => s[1]), hovertemplate: LXt`<b>%{y:.2f} kW</b> · ${label}<br>fascia %{x:.1f} kW (%{customdata} campioni)<extra></extra>` });
-      });
-      plot(d2, traces, { hovermode: 'x unified', xaxis: { title: { text: LX('Potenza misurata (centro della fascia) [kW]') } },
-        yaxis: { title: { text: S.regBins === 'bias' ? LX('Errore medio (previsto − misurato) [kW]') : 'MAE [kW]' }, zeroline: true, zerolinecolor: c.axis } }, 'regressione_errore_fasce');
-    }
-
-    // error distribution
-    if (sc) {
-      const d3 = chartDiv('short');
-      view.append(card(LX('Distribuzione degli errori'), LX('Percentuale dei campioni di test per errore (previsto − misurato), in classi da 2 kW. La baseline è esclusa.'), d3));
-      const bins = []; for (let e = -80; e < 80; e += 2) bins.push(e + 1);
-      const tr = ['linear', 'single_neuron', 'mlp'].filter(id => sc.pred[id]).map(id => {
-        const cnt = bins.map(() => 0); const p = sc.pred[id];
-        for (let i = 0; i < p.length; i++) { const e = p[i] - sc.measured[i]; const b = Math.floor((e + 80) / 2); if (b >= 0 && b < cnt.length) cnt[b]++; }
-        const label = run.metrics.find(m => m.id === id).label;
-        return lineT(bins, cnt.map(v => 100 * v / p.length), label, c[REG_COLOR[id]], { line: { color: c[REG_COLOR[id]], width: 2, shape: 'hvh' },
-          hovertemplate: `<b>%{y:.2f} %</b> · ${label}<extra></extra>` });
-      });
-      plot(d3, tr, { hovermode: 'x unified', xaxis: { title: { text: LX('Errore [kW]') } }, yaxis: { title: { text: LX('Campioni [%]') }, rangemode: 'tozero' } }, 'regressione_distribuzione_errori');
-    }
-
-    // table over runs
-    const rows = [];
-    for (const r of REG.runs) for (const m of r.metrics) {
-      const other = REG.runs.find(o => o.name !== r.name);
-      const om = other ? other.metrics.find(x => x.id === m.id) : null;
-      rows.push(Object.assign({}, m, { run: r.name + (r.used ? ' ★' : ''), nmae_all: regNmae(m), dmae: om ? m.mae - om.mae : null, _hl: r.used }));
-    }
-    view.append(foldCard(LX('Metriche di tutti i run'), LX('Valori letti da Modelli/metriche.txt di ogni run (★ = run usato nella tesi). "Verifica" = MAE ricalcolato dai punti del grafico salvato: deve coincidere.'),
-      table([
-        { key: 'run', label: 'Run' }, { key: 'label', label: LX('Modello') },
-        { key: 'rmse', label: 'RMSE [kW]', num: true, fmt: v => fmt(v, 3) }, { key: 'mae', label: 'MAE [kW]', num: true, fmt: v => fmt(v, 3) },
-        { key: 'nmae_all', label: 'nMAE [%]', num: true, fmt: v => fmt(v, 3) },
-        { key: 'r2', label: 'R²', num: true, fmt: v => fmt(v, 4) }, { key: 'bias', label: LX('Errore medio [kW]'), num: true, fmt: v => fmt(v, 3) },
-        { key: 'check_mae', label: LX('Verifica MAE'), num: true, fmt: v => fmt(v, 3) },
-        { key: 'dmae', label: LX('Δ MAE vs altro run'), num: true, fmt: v => fmtS(v, 3) },
-      ], rows)));
-    view.append(h('p', { class: 'note' }, LXt`nMAE = MAE / ${fmt(REG.p_mean, 2)} kW, potenza media di tutto il dataset (foglio Dati_completi): il test è estratto a caso da tutto il periodo. Fonti: ${REG.runs.map(r => r.source).join(' · ')}.`));
   }
 
   // ================================================================== VIEW: Abruzzo · comparison of the configurations
@@ -1868,7 +1746,7 @@
     const met = exoMetricDef(S.gdMetric);
     const seasons = F.seasons;
     view.append(viewHead(DS_GD, isEndo ? LX('LSTM endogena') : LX('LSTM esogena'),
-      LX('Previsione della potenza AC ') + (isEndo ? LX('usando solo la potenza passata (un canale), con le stesse impostazioni della rete esogena. ') : LX('usando come serie temporali la potenza passata e le quattro variabili meteo della regressione. ')) +
+      LX('Previsione della potenza AC ') + (isEndo ? LX('usando solo la potenza passata (un canale), con le stesse impostazioni della rete esogena. ') : LX('usando come serie temporali la potenza passata e le quattro variabili meteo misurate (irraggiamento, temperatura dei moduli, temperatura ambiente, velocità del vento). ')) +
       LX('TH = lunghezza della finestra di ingresso, TL = di quanti passi avanti si prevede; un passo vale circa 5 minuti.')));
     const ctl = [segCtl(LX('Addestramento'), TRAIN_SEG, mode, v => set('gdMode_' + base, v)),
       selectCtl(LX('Metrica dei grafici'), EXO_METRICS, met.value, v => set('gdMetric', v))];
@@ -2024,20 +1902,14 @@
   }
 
   // ================================================================== VIEW: Generation_data, all models compared
-  // regression metric with the same meaning as an LSTM metric (null when the regression has no such value)
-  function regMetric(m, met) {
-    if (!m) return null;
-    return { mae: m.mae, nmae: regNmae(m), r2: m.r2 }[met] ?? null;
-  }
   function viewGDCompare() {
     const c = C();
     const mode = S.cmpMode === 'joined' ? 'joined' : 'sep', joined = mode === 'joined';
     const FN = GD[gdFam('endo', mode)], FX = GD[gdFam('exo', mode)];
     const met = exoMetricDef(S.cmpMetric);
     const higher = isSk(met.value) || met.value === 'r2';
-    const run = usedRun(), rb = bestReg(run);
     view.append(viewHead(DS_GD, LX('Confronto tra i modelli'),
-      LX('Regressione, LSTM esogena e LSTM endogena sullo stesso impianto. La regressione stima la potenza nello stesso istante usando le misure meteo; le due LSTM la prevedono da 1 a 6 passi avanti (da 5 a 30 minuti), con la potenza passata e il meteo (esogena) o con la sola potenza passata (endogena).')));
+      LX('LSTM esogena e LSTM endogena sullo stesso impianto. Le due reti prevedono la potenza da 1 a 6 passi avanti (da 5 a 30 minuti), con la potenza passata e il meteo misurato (esogena) o con la sola potenza passata (endogena).')));
     const ctl = [segCtl(LX('Addestramento delle LSTM'), TRAIN_SEG, mode, v => set('cmpMode', v)),
       selectCtl(LX('Metrica dei grafici'), EXO_METRICS, met.value, v => set('cmpMetric', v))];
     if (joined) ctl.push(segCtl(LX('Campioni di test'), SAMPLES_SEG, S.gdSamples, v => set('gdSamples', v)));
@@ -2051,8 +1923,7 @@
     const diffs = pairs.map(([a, b]) => { const ck = commonKeys(FN, a, b); return meanOn(ck, a, 'mae') - meanOn(ck, b, 'mae'); }).filter(v => v != null && isFinite(v));
     const exoWins = diffs.filter(d => d > 0).length;
     view.append(sectionTitle(LX('In sintesi'), null, LX('Errore assoluto medio (MAE) della configurazione migliore di ogni modello.')));
-    view.append(h('div', { class: 'grid four' },
-      tile(LX('Regressione'), LXt`${rb.label} · stima nello stesso istante`, fmt(rb.mae, 2), 'kW MAE', [fact('R²', fmt(rb.r2, 3)), fact('nMAE', fmt(regNmae(rb), 1) + ' %')]),
+    view.append(h('div', { class: 'grid three' },
       tile(LX('LSTM esogena'), LXt`${bx.id} · previsione a ${bx.tl * EXO.step_min} min`, fmt(gdVal(FX, bx, 'mae', 'mean'), 2), 'kW MAE',
         [h('span', null, LX('vs persistenza '), signed(gdVal(FX, bx, 'skill', 'mean'))), h('span', null, 'skill score ', signed(gdVal(FX, bx, 'ss', 'mean'))), fact('R²', fmt(gdVal(FX, bx, 'r2', 'mean'), 3))]),
       tile(LX('LSTM endogena'), LXt`${bn.id} · previsione a ${bn.tl * EXO.step_min} min`, fmt(gdVal(FN, bn, 'mae', 'mean'), 2), 'kW MAE',
@@ -2060,10 +1931,8 @@
       diffs.length ? tile(LX('Esogena contro endogena'), LX('MAE endogena − esogena, a parità di TH, TL e celle'), fmtS(mean(diffs), 2), LX('kW in media'),
         [fact(LX('l\'esogena è migliore in'), LXt`${exoWins} su ${diffs.length}`)]) : null,
     ));
-    view.append(callout(LX('La regressione ha l\'errore più basso perché conosce l\'irraggiamento misurato nello stesso istante: non prevede il futuro. Per giudicare le LSTM il confronto giusto è con la persistenza (l\'ultimo valore noto) e tra di loro.'), true));
-
     // --- error vs horizon
-    view.append(sectionTitle(LX('Errore al crescere dell\'orizzonte'), null, LX('Per ogni orizzonte TL, la configurazione migliore di ciascuna rete (TH e celle con il valore migliore), la persistenza sugli stessi campioni dell\'esogena e, come linea di riferimento, la regressione.')));
+    view.append(sectionTitle(LX('Errore al crescere dell\'orizzonte'), null, LX('Per ogni orizzonte TL, la configurazione migliore di ciascuna rete (TH e celle con il valore migliore) e la persistenza sugli stessi campioni dell\'esogena.')));
     const tlsAll = [...new Set(FN.configs.concat(FX.configs).map(x => x.tl))].sort((a, b) => a - b);
     const xl = tlsAll.map(t => `${t} ${t === 1 ? LX('passo') : LX('passi')} (${t * EXO.step_min} min)`);
     const atTl = (F, tl) => bestOf(F.configs.filter(x => x.tl === tl), cf => gdVal(F, cf, met.value, 'mean'), higher);
@@ -2082,9 +1951,6 @@
       hovertemplate: `${name}${idKey ? ' · %{customdata}' : ''}<br><b>%{y:.${met.d}f} ${met.unit}</b><extra></extra>` });
     const hzTr = [mkLine('exo', 'exoId', LX('LSTM esogena'), c.s1), mkLine('endo', 'endoId', LX('LSTM endogena'), c.s2)];
     if (!isSk(met.value)) hzTr.push(mkLine('pers', null, LX('Persistenza'), c.neutral, 'dot'));
-    const rv = regMetric(rb, met.value);
-    if (rv != null) hzTr.push(lineT(xl, xl.map(() => rv), LXt`Regressione (${rb.label}), stima nello stesso istante`, c.s3,
-      { line: { color: c.s3, width: 2, dash: 'dash' }, hovertemplate: LXt`Regressione<br><b>%{y:.${met.d}f} ${met.unit}</b><extra></extra>` }));
     plot(hz, hzTr, { hovermode: 'closest', xaxis: { type: 'category', title: { text: LX('Orizzonte di previsione TL') } },
       yaxis: { title: { text: met.label }, rangemode: isSk(met.value) ? 'normal' : 'tozero', zeroline: isSk(met.value), zerolinecolor: c.axis } }, 'confronto_orizzonte');
 
@@ -2218,7 +2084,7 @@
     // --- every model of the dataset
     view.append(sectionTitle(LX('Tutti i modelli di Generation data')));
     const all = overviewRows().filter(r => r.ds === DS_GD);
-    view.append(foldCard(LXt`Tabella completa (${all.length} righe)`, LX('Regressione (run usato nella tesi) e tutte le configurazioni LSTM, con le stagioni separate e con gli anni uniti (questi ultimi sull\'anno 3).'), table([
+    view.append(foldCard(LXt`Tabella completa (${all.length} righe)`, LX('Tutte le configurazioni LSTM, con le stagioni separate e con gli anni uniti (queste ultime sull\'anno 3).'), table([
       { key: 'part', label: LX('Modello') }, { key: 'name', label: LX('Configurazione') }, { key: 'th', label: LX('Finestra (TH)') }, { key: 'tl', label: LX('Orizzonte (TL)') },
       { key: 'cells', label: LX('Celle / neuroni') }, { key: 'mae', label: 'MAE [kW]', num: true, fmt: v => fmt(v, 2) },
       { key: 'nmae', label: 'nMAE [%]', num: true, fmt: v => fmt(v, 1) },
@@ -2708,11 +2574,6 @@
 
   function archNets() {
     const nets = [];
-    for (const a of REG.architectures || []) {
-      nets.push({ group: 'reg', id: a.id, label: a.label, kind: 'ff', arch: a, inputs: REG.inputs, target: LX('Potenza AC stimata [kW]'),
-        split: REG.split ? LXt`${REG.split.train} / ${REG.split.val} / ${REG.split.test} % casuale (addestramento / validazione / test)` : '—',
-        script: REG.script.split('/').pop(), seed: LX('nessuno (divisione casuale diversa a ogni run)') });
-    }
     for (const c2 of ABR.configs) if (c2.arch) nets.push({ group: 'abr', id: c2.id, label: c2.id + (c2.preferred ? ' (preferita)' : ''), kind: 'lstm', arch: c2.arch,
       inputs: c2.arch.inputs, th: c2.th, tl: c2.tl, unit: 'h', stepName: LX("un passo = un'ora"), target: LXt`Energia dell'ora t + ${c2.tl} [kWh]`,
       split: LXt`${Math.round((c2.frac || 0.9) * 100)} / ${100 - Math.round((c2.frac || 0.9) * 100)} % cronologica (addestramento / test), un modello per stagione`,
@@ -2903,7 +2764,7 @@
     view.append(viewHead(isAbr ? DS_ABR : DS_GD, LX('Architetture delle reti'),
       LX('Per ogni rete: i livelli nell\'ordine in cui sono definiti nello script MATLAB, con dimensioni e parametri addestrabili, uno schema del funzionamento e le impostazioni di addestramento. Tutto è letto direttamente dagli script.')));
     if (!nets.length) { view.append(emptyBox(LX('Nessuna architettura trovata negli script.'))); return; }
-    const groups = [{ value: 'reg', label: LX('Regressione') }, { value: 'abr', label: LX('LSTM endogena') }, { value: 'exo', label: LX('LSTM esogena') },
+    const groups = [{ value: 'abr', label: LX('LSTM endogena') }, { value: 'exo', label: LX('LSTM esogena') },
       { value: 'endo', label: LX('LSTM endogena') }, { value: 'exoJ', label: LX('Esogena · anni uniti') }, { value: 'endoJ', label: LX('Endogena · anni uniti') }].filter(gp => nets.some(n => n.group === gp.value));
     const gKey = isAbr ? 'archGroupAbr' : 'archGroup';
     if (!groups.some(gp => gp.value === S[gKey])) S[gKey] = groups[0].value;
@@ -2947,7 +2808,7 @@
     view.append(viewHead(isAbr ? DS_ABR : DS_GD, LX('Grafici originali'),
       LX('Le immagini salvate dagli script MATLAB, così come sono (tema scuro, etichette in italiano). Clicca per aprirle ingrandite. Le prove scartate durante il lavoro non sono mostrate.')));
     const parts = isAbr ? [{ value: 'abruzzo', label: LX('LSTM endogena') }]
-      : [{ value: 'all', label: LX('Tutti i modelli') }, { value: 'regressione', label: LX('Regressione') }, { value: 'esogena', label: LX('LSTM esogena') },
+      : [{ value: 'all', label: LX('Tutti i modelli') }, { value: 'esogena', label: LX('LSTM esogena') },
         { value: 'endogena_gd', label: LX('LSTM endogena') }, { value: 'esogena_anni', label: LX('Esogena · anni uniti') }, { value: 'endogena_anni', label: LX('Endogena · anni uniti') }];
     const pKey = 'galPart_' + ds, grKey = 'galGroup_' + ds;
     if (!parts.some(p => p.value === S[pKey])) S[pKey] = parts[0].value;
@@ -2974,12 +2835,12 @@
     view.append(card(LX('Come è organizzata'), null, h('div', { class: 'prose' },
       h('p', null, LX('Le schede in alto sono i due dataset. Dentro ciascuno, la riga di pulsanti sotto le schede porta alle pagine del dataset:')),
       h('ul', null,
-        h('li', null, h('b', null, 'Generation data. '), LX('Confronto tra i modelli (regressione, LSTM esogena e LSTM endogena insieme), una pagina per ciascun modello, Esplora il test, Architetture, Grafici originali.')),
+        h('li', null, h('b', null, 'Generation data. '), LX('Confronto tra i modelli (LSTM esogena e LSTM endogena insieme), una pagina per ciascun modello, Esplora il test, Architetture, Grafici originali.')),
         h('li', null, h('b', null, LX('Monomega Abruzzo. ')), LX('Confronto tra le configurazioni LSTM endogene (finestra, orizzonte, celle), Dettaglio di una configurazione, Esplora il test, Architetture, Grafici originali.'))),
       h('p', null, LX('Ogni pagina comincia con un riquadro "In sintesi" con i risultati principali; seguono i grafici e, in fondo, le tabelle complete, che si aprono con un clic. Le scelte fatte nei filtri vengono ricordate dal browser.')))));
     if (!D.public) view.append(card(LX('Come aggiornare'), null, h('div', { class: 'prose' },
       h('p', null, 'Quando rilanci uno script o aggiungi risultati, fai doppio clic su ', h('code', null, 'aggiorna_dashboard.bat'), ' (in questa cartella) e ricarica la pagina. Lo script ', h('code', null, 'Elaborato/scripts/build_dashboard.py'), ' rilegge tutti i file dei modelli, ricalcola le metriche e riscrive ', h('code', null, 'data.js'), '. Non modifica nulla nelle cartelle dei modelli.'),
-      h('p', null, 'Nuovi run della regressione (cartelle Risultati/Run_*) e nuove cartelle Grafici_TH*_TL* vengono trovati da soli. Per la regressione, i punti dei grafici vengono estratti dal file .fig con MATLAB la prima volta (circa 25 secondi per run).'),
+      h('p', null, 'Nuove cartelle Grafici_TH*_TL* vengono trovate da sole.'),
       h('p', null, 'I testi della pagina si cambiano con "Modifica i testi" (in fondo alla pagina, qui o sul sito): serve il token di GitHub del repository pubblico. Il salvataggio scrive ', h('code', null, 'testi.js'), ' direttamente su GitHub; prima di ricostruire il sito da qui, esegui git pull in Elaborato/dashboard_public: lo script di pubblicazione riporta testi.js in questa cartella. I numeri restano calcolati dai file dei modelli: se una frase modificata contiene un numero che poi cambia, torna al testo originale.'))));
     view.append(card(LX('Colori'), null, h('div', { class: 'prose' }, h('ul', null,
       h('li', null, sw(c.s1), LX('misura reale')), h('li', null, sw(c.s2), LX('previsione del modello')),
@@ -3043,7 +2904,6 @@
       h('ul', null,
         h('li', null, LXt`Reti di Generation data a stagioni separate: 11 fogli, cioè tutto il dataset, P̄ = ${fmt(pGD, 2)} kW.`),
         h('li', null, LXt`Reti di Generation data ad anni uniti: i fogli dell'anno 3, cioè un anno intero, P̄ = ${fmt(pGD3, 2)} kW.`),
-        h('li', null, LXt`Regressione: il test è estratto a caso da tutto il dataset, quindi P̄ = potenza media di tutto il dataset, ${fmt(REG.p_mean, 2)} kW.`),
         h('li', null, LXt`Abruzzo, 4 stagioni: P̄ = ${fmt(pAbr, 1)} kW su tutte le ore, ${fmt(pAbrP, 1)} kW sulle ore con produzione.`)),
       h('p', null, h('b', null, LX('Abruzzo: due varianti. ')), LX('I dati orari comprendono la notte. "Tutte le ore" usa la potenza media calcolata su tutte le ore, notti comprese; "ore di produzione" usa la media delle sole ore con energia > 0. Il MAE è calcolato su tutte le ore del test. Generation data non contiene la notte, quindi ha una sola variante.')),
       h('p', null, h('b', null, LX('Media pesata. ')), LX('Tutte le colonne "media" (MAE, RMSE, R², skill score, miglioramento, MAPE) sono medie delle stagioni pesate con il numero di giorni di ciascuna:')),
@@ -3062,7 +2922,6 @@
         h('li', null, h('b', null, LX('Nei grafici ')), LX('si può mostrare la misura traslata di 1 passo: aiuta a vedere se la previsione è in ritardo, ma non è un riferimento per le tabelle.')),
       ))));
     view.append(card(LX('Dati e cautele'), null, h('div', { class: 'prose' }, h('ul', null,
-      h('li', null, LX('Regressione: divisione train/test casuale senza seed, quindi ogni run dà numeri leggermente diversi. Il run usato nella tesi è ') + REG.used_run + '.'),
       h('li', null, LX('Abruzzo: le metriche sono ricalcolate dai file Risultati_<stagione>.csv della riesecuzione di tutte le configurazioni (26/10/2026). I test durano circa 9 giorni per stagione. Dati mancanti nei fogli: 12 ore in Primavera 2020, 22 in Estate 2020, 6 in Primavera 2021, 3 in Estate 2021, sempre a blocchi di ore consecutive. Solo un blocco cade in un periodo di test: in Estate 2020 mancano le 14 ore dal 21/09/2020 alle 21:00 al 22/09/2020 alle 10:00 (la notte e la mattina). Gli script le riempiono per interpolazione lineare, quindi lì la "misura" è una rampa da 0 kWh (ore 20) a 138 kWh (ore 11), anche durante la notte.')),
       h('li', null, LX('Generation_data non ha data e ora: giorni e stagioni sono ricostruiti (foglio Riepilogo) e il passo di 5 minuti è una stima. Le notti non ci sono.')),
       h('li', null, LX('Le medie "sulle stagioni" sono medie delle metriche di ogni stagione pesate con i giorni (vedi il riquadro sul MAE normalizzato).')),
@@ -3070,7 +2929,6 @@
     view.append(card(LX('Materiale non mostrato'), null, h('div', { class: 'prose' },
       h('p', null, LX('Le prove scartate durante il lavoro e le copie duplicate dei grafici non compaiono nella dashboard.')))));
     view.append(card(LX('Fonti'), null, h('div', { class: 'prose' }, h('ul', null,
-      REG.runs.map(r => h('li', null, h('code', null, r.source), r.scatter_source ? [LX(' · punti: '), h('code', null, r.scatter_source)] : null)),
       h('li', null, h('code', null, 'Monomega abruzzo/Grafici_*/Risultati_*.csv')),
       h('li', null, h('code', null, 'Monomega abruzzo/Abruzzo_diviso_in_stagioni.xlsx'), LX(' (serie misurate, riferimenti ingenui)')),
       h('li', null, h('code', null, 'Generation_data/LSTM_ESOGENA/Reti_stagioni_separate/Grafici_*/Risultati_*.csv'), ' e ', h('code', null, 'Generation_data/LSTM_ENDOGENA/Reti_con_stagioni_separate/Grafici_*/Risultati_*.csv')),
