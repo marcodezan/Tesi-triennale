@@ -2901,7 +2901,7 @@
         h('dt', null, LX('Stessa ora di ieri')), h('dd', null, math(FM.yest),
           h('div', null, LX('Previsione ingenua con la misura di 24 ore prima (solo Abruzzo, dati orari). Nelle tabelle dell\'Abruzzo è il riferimento per ogni TL.'))),
         h('dt', null, LX('Misura traslata di 1 passo')), h('dd', null, LX('La misura spostata in avanti di un passo (1 ora nell\'Abruzzo, 5 minuti su Generation data). Compare solo nei grafici, non nelle tabelle.')),
-        h('dt', null, LX('Analisi del ritardo')), h('dd', null, LX('MAE tra la previsione al tempo t e la misura al tempo t − k, per vari k. Il minimo a k = 0 indica una previsione in fase; il minimo a k = TL indica che la rete ripete l\'ultimo valore noto.')),
+        h('dt', null, LX('Analisi del ritardo')), h('dd', null, LX('MAE tra la previsione al tempo t e la misura al tempo t − k, per vari k. Il minimo a k = 0 indica una previsione in fase; il minimo a k = TL indica che la rete tende a ripetere l\'ultimo valore noto.')),
       ))));
     const pGD = pooledMean(EXO.seasons, 'p_mean', 'n'), pGD3 = pooledMean(EXOJ.seasons, 'p_mean', 'n');
     const pAbr = pooledMean(ABR.seasons, 'p_mean', 'n_valid'), pAbrP = pooledMean(ABR.seasons, 'p_mean_prod', 'n_prod');
@@ -2927,7 +2927,7 @@
         { key: 'pp', label: LX('Potenza media, ore di produzione [kW]'), num: true, fmt: v => v == null ? '—' : fmt(v, 2) }], dayRows)),
       h('p', null, LX('Nota: un\'energia in kWh prodotta in un\'ora equivale alla potenza media in kW in quell\'ora, quindi gli errori orari dell\'Abruzzo si leggono anche come kW medi.')))));
     view.append(card(LX('Quale riferimento ingenuo, e perché'), null, h('div', { class: 'prose' },
-      h('p', null, LX('La persistenza classica (misura di TL passi prima) è un buon riferimento solo se TL è breve rispetto al ciclo giornaliero. Nell\'Abruzzo, con dati orari e TL = 12 h, la "previsione" per mezzogiorno è il valore di mezzanotte e quella per mezzanotte è il picco di mezzogiorno: i picchi finiscono di notte, l\'errore della persistenza diventa enorme e la rete sembra migliore di quanto sia.')),
+      h('p', null, LX('La persistenza classica (misura di TL passi prima) è un buon riferimento solo se TL è breve rispetto al ciclo giornaliero.')),
       h('ul', null,
         h('li', null, h('b', null, 'Abruzzo. '), LXt`Il riferimento principale, per tutti i TL, è la stessa ora del giorno prima (t − 24 h): rispetta il ciclo giornaliero ed è disponibile quando si fa la previsione (TL ≤ 24 h). Nei dati è già migliore della persistenza classica anche a TL = 1 h. La persistenza classica è riportata solo per TL ≤ ${ABR_PERS_MAX_TL} h.`),
         h('li', null, h('b', null, 'Generation data. '), LX('TL arriva al massimo a 6 passi (circa 30 minuti) e i fogli contengono solo ore di luce, quindi il problema non si presenta: resta la persistenza classica. L\'unico effetto residuo è al passaggio da un giorno al successivo (la sera seguita dalla mattina dopo), dove per i primi TL campioni la persistenza usa il valore della sera prima.')),
