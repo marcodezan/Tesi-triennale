@@ -406,15 +406,15 @@ body.editing .site-foot { padding-bottom: 200px; }
    right one (7/12); the text column never changes side. Below 1000 px everything goes in one column. */
 .story { --serif: "Source Serif 4", "Source Serif Pro", Georgia, "Times New Roman", serif; }
 .story .kicker { color: var(--accent); font-size: 12px; font-weight: 650; text-transform: uppercase; letter-spacing: 0.06em; margin: 0 0 10px; }
-.hero { display: grid; grid-template-columns: minmax(0, 7fr) minmax(0, 5fr); gap: 56px; align-items: start; padding: 36px 0 8px; }
+.hero { display: grid; grid-template-columns: minmax(0, 7fr) minmax(0, 5fr); gap: 64px; align-items: center; padding: 36px 0 8px; }
 .hero-title { font-family: var(--serif); font-size: clamp(32px, 3.6vw, 48px); line-height: 1.1; font-weight: 650; letter-spacing: -0.015em; }
 .hero-lead { margin-top: 22px; max-width: 66ch; }
 .hero-lead p { font-size: 17px; line-height: 1.65; color: var(--text-secondary); margin: 0 0 14px; }
 .hero-status { margin: 8px 0 0; }
-.stat-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-top: 30px; }
-.stat { border: 1px solid var(--border); border-radius: 12px; background: var(--surface-1); padding: 18px 18px 16px; }
-.stat-v { font-family: var(--serif); font-size: 34px; line-height: 1.1; font-weight: 650; color: var(--text-primary); font-variant-numeric: tabular-nums; }
-.stat-l { margin-top: 6px; font-size: 13px; line-height: 1.45; color: var(--text-secondary); }
+.stat-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
+.stat { border: 1px solid var(--border); border-radius: 14px; background: var(--surface-1); padding: 28px 26px 26px; min-height: 200px; display: flex; flex-direction: column; justify-content: flex-start; }
+.stat-v { font-family: var(--serif); font-size: clamp(36px, 3.4vw, 52px); line-height: 1.05; font-weight: 650; color: var(--text-primary); font-variant-numeric: tabular-nums; }
+.stat-l { margin-top: 12px; font-size: 15px; line-height: 1.5; color: var(--text-secondary); }
 
 .story-sec { margin-top: 64px; padding-top: 36px; border-top: 1px solid var(--border); scroll-margin-top: calc(var(--topbar-h, 140px) - 20px); }
 .story-sec.split { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 7fr); gap: 56px; align-items: start; }
@@ -447,6 +447,8 @@ table.tried td:first-child { color: var(--text-primary); font-weight: 600; width
   .story-sec:not(.split) > .story-text { max-width: none; }
   .hero-lead, .story-prose { max-width: 70ch; }
   .stat-row { grid-template-columns: repeat(4, minmax(0, 1fr)); margin-top: 0; }
+  .stat { min-height: 0; padding: 20px 18px; }
+  .stat-l { font-size: 13.5px; }
   .gloss { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 @media (max-width: 700px) {
